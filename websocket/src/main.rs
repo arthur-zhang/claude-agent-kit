@@ -1,11 +1,9 @@
-use std::env;
-use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use websocket::{create_app, ConnectionManager};
+use websocket::agent::AgentPoolConfig;
 
 #[tokio::main]
-async fn main() {
-    // 初始化日志
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -14,25 +12,19 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // 获取监听地址
-    let addr = env::var("WEBSOCKET_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+    // Read pool config from environment
+    let pool_config = AgentPoolConfig::default();
 
-    info!("Starting WebSocket server on {}", addr);
+    // Create router with agent pool
+    let app = websocket::server::create_router(pool_config).await?;
 
-    // 创建连接管理器
-    let manager = ConnectionManager::new();
+    // Start server
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+        .await?;
 
-    // 创建应用
-    let app = create_app(manager);
+    tracing::info!("WebSocket server listening on: {}", listener.local_addr()?);
 
-    // 启动服务器
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind address");
+    axum::serve(listener, app).await?;
 
-    info!("WebSocket server listening on {}", addr);
-
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    Ok(())
 }

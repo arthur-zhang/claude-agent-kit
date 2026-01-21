@@ -14,6 +14,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 claude-agent-sdk = { path = "../agent-sdk" }
 async-stream = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"
