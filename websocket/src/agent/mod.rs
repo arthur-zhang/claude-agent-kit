@@ -2,8 +2,8 @@
 
 pub mod pool;
 pub mod client;
-// pub mod session;
+pub mod session;
 
 pub use pool::AgentPool;
 pub use client::PooledAgent;
-// pub use session::AgentSession;
+pub use session::AgentSession;
