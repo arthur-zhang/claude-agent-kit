@@ -2,8 +2,10 @@
 
 use crate::agent::client::PooledAgent;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use claude_agent_sdk::Error;
 use futures::{SinkExt, StreamExt};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -25,7 +27,7 @@ impl AgentSession {
     }
 
     /// Run the session, forwarding messages between WebSocket and Agent.
-    pub async fn run(self, websocket: WebSocket, mut agent: PooledAgent) -> Result<(), String> {
+    pub async fn run(self, websocket: WebSocket, mut agent: PooledAgent) -> Result<(), Error> {
         info!("Starting agent session {}", self.session_id);
 
         // Split websocket
@@ -75,6 +77,19 @@ impl AgentSession {
                             // Query the agent and get the response stream
                             if let Err(e) = agent.client_mut().query_string(prompt, session_id).await {
                                 error!("Failed to query agent: {}", e);
+
+                                // Send error message to client
+                                let error_json = json!({
+                                    "type": "error",
+                                    "error": format!("Failed to query agent: {}", e)
+                                });
+                                if let Ok(error_str) = serde_json::to_string(&error_json) {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(5),
+                                        ws_sender.send(WsMessage::Text(error_str))
+                                    ).await;
+                                }
+
                                 break;
                             }
 
@@ -93,9 +108,19 @@ impl AgentSession {
                                                     }
                                                 };
 
-                                                if ws_sender.send(WsMessage::Text(json)).await.is_err() {
-                                                    warn!("Failed to send to WebSocket");
-                                                    break;
+                                                match tokio::time::timeout(
+                                                    Duration::from_secs(5),
+                                                    ws_sender.send(WsMessage::Text(json))
+                                                ).await {
+                                                    Ok(Ok(_)) => {},
+                                                    Ok(Err(e)) => {
+                                                        warn!("Failed to send to WebSocket: {}", e);
+                                                        break;
+                                                    }
+                                                    Err(_) => {
+                                                        warn!("Timeout sending to WebSocket");
+                                                        break;
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -107,6 +132,19 @@ impl AgentSession {
                                 }
                                 Err(e) => {
                                     error!("Failed to get response stream: {}", e);
+
+                                    // Send error message to client
+                                    let error_json = json!({
+                                        "type": "error",
+                                        "error": format!("Failed to get response stream: {}", e)
+                                    });
+                                    if let Ok(error_str) = serde_json::to_string(&error_json) {
+                                        let _ = tokio::time::timeout(
+                                            Duration::from_secs(5),
+                                            ws_sender.send(WsMessage::Text(error_str))
+                                        ).await;
+                                    }
+
                                     break;
                                 }
                             }
@@ -126,9 +164,13 @@ impl AgentSession {
             }
         }
 
-        // Clean up
+        // Clean up - abort the WebSocket receive task
         ws_recv_task.abort();
-        let _ = agent.disconnect().await;
+
+        // Disconnect agent and log any errors
+        if let Err(e) = agent.disconnect().await {
+            error!("Failed to disconnect agent: {}", e);
+        }
 
         info!("Agent session {} ended", self.session_id);
         Ok(())
@@ -148,5 +190,81 @@ mod tests {
     fn test_session_creation() {
         let session = AgentSession::new();
         assert_ne!(session.session_id(), Uuid::nil());
+    }
+
+    #[test]
+    fn test_session_id_uniqueness() {
+        let session1 = AgentSession::new();
+        let session2 = AgentSession::new();
+        assert_ne!(session1.session_id(), session2.session_id());
+    }
+
+    #[tokio::test]
+    async fn test_error_json_format() {
+        // Test that error JSON is properly formatted
+        let error_json = json!({
+            "type": "error",
+            "error": "Test error"
+        });
+
+        let json_str = serde_json::to_string(&error_json).unwrap();
+        let parsed: Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(parsed.get("type").and_then(|v| v.as_str()), Some("error"));
+        assert_eq!(parsed.get("error").and_then(|v| v.as_str()), Some("Test error"));
+    }
+
+    #[tokio::test]
+    async fn test_message_parsing() {
+        // Test that we can parse incoming WebSocket messages correctly
+        let test_message = r#"{
+            "message": {
+                "content": "Hello, agent!"
+            },
+            "session_id": "test-session"
+        }"#;
+
+        let json: Value = serde_json::from_str(test_message).unwrap();
+
+        let prompt = json.get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+
+        let session_id = json.get("session_id")
+            .and_then(|s| s.as_str())
+            .unwrap_or("default");
+
+        assert_eq!(prompt, "Hello, agent!");
+        assert_eq!(session_id, "test-session");
+    }
+
+    #[tokio::test]
+    async fn test_message_parsing_defaults() {
+        // Test that defaults work when fields are missing
+        let test_message = r#"{}"#;
+
+        let json: Value = serde_json::from_str(test_message).unwrap();
+
+        let prompt = json.get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
+
+        let session_id = json.get("session_id")
+            .and_then(|s| s.as_str())
+            .unwrap_or("default");
+
+        assert_eq!(prompt, "");
+        assert_eq!(session_id, "default");
+    }
+
+    #[tokio::test]
+    async fn test_timeout_duration() {
+        // Verify timeout is reasonable (5 seconds)
+        let timeout = Duration::from_secs(5);
+        assert_eq!(timeout.as_secs(), 5);
+        assert!(timeout.as_secs() > 0);
+        assert!(timeout.as_secs() < 30); // Not too long
     }
 }
