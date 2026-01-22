@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::types::{ClaudeAgentOptions, Error, Message, Result};
 use crate::internal::Query;
-use crate::internal::transport::{ProcessHandle, SubprocessCLITransport, PromptInput as TransportPromptInput, Transport};
+use crate::internal::transport::{ProcessHandle, SubprocessCLITransport, PromptInput as TransportPromptInput};
 
 /// Prompt input for client operations.
 pub enum ClientPromptInput {

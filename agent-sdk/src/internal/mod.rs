@@ -8,4 +8,3 @@ pub mod client;
 pub use client::InternalClient;
 pub use message_parser::parse_message;
 pub use query::Query;
-pub use transport::Transport;

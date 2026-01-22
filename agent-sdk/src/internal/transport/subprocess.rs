@@ -1,15 +1,13 @@
 //! Subprocess transport implementation using Claude Code CLI.
 
-use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
-use super::{ProcessHandle, ReadHalf, StderrHalf, Transport, WriteHalf};
+use super::{ProcessHandle, ReadHalf, StderrHalf, WriteHalf};
 use crate::types::{ClaudeAgentOptions, Error, Result};
 
 const _DEFAULT_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
@@ -359,11 +357,11 @@ impl SubprocessCLITransport {
 
         Ok((read_half, write_half, stderr_half, process_handle))
     }
-}
 
-#[async_trait]
-impl Transport for SubprocessCLITransport {
-    async fn connect(&mut self) -> Result<()> {
+    /// Connect the transport and prepare for communication.
+    ///
+    /// This starts the Claude CLI process and sets up stdio pipes.
+    pub async fn connect(&mut self) -> Result<()> {
         if self.process.is_some() {
             return Ok(());
         }
@@ -410,50 +408,9 @@ impl Transport for SubprocessCLITransport {
         Ok(())
     }
 
-    async fn write(&self, data: &str) -> Result<()> {
-        if let Some(ref stdin) = self.stdin {
-            let mut stdin_guard = stdin.lock().await;
-            stdin_guard
-                .write_all(data.as_bytes())
-                .await
-                .map_err(|e| Error::Io(e))?;
-            stdin_guard.flush().await.map_err(|e| Error::Io(e))?;
-            Ok(())
-        } else {
-            Err(Error::Process("stdin not available".to_string()))
-        }
-    }
-
-    async fn read_messages(&self) -> Result<mpsc::Receiver<serde_json::Value>> {
-        // This method is deprecated in favor of using split() and ReadHalf::read_messages()
-        Err(Error::Process(
-            "read_messages() is not supported after split(). Use split() to get ReadHalf and call read_messages() on it.".to_string()
-        ))
-    }
-
-    async fn close(&mut self) -> Result<()> {
-        self.ready = false;
-
-        // Close stdin
-        self.stdin = None;
-
-        // Kill process
-        if let Some(ref mut process) = self.process {
-            let _ = process.kill().await;
-            let _ = process.wait().await;
-        }
-
-        self.process = None;
-        Ok(())
-    }
-
-    fn is_ready(&self) -> bool {
+    /// Check if transport is ready for communication.
+    pub fn is_ready(&self) -> bool {
         self.ready
-    }
-
-    async fn end_input(&mut self) -> Result<()> {
-        self.stdin = None;
-        Ok(())
     }
 }
 

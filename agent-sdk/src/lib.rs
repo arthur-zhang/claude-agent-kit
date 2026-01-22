@@ -34,5 +34,5 @@ pub mod client;
 
 // Re-export all public types at the crate root for convenience
 pub use types::*;
-pub use internal::{InternalClient, Transport};
+pub use internal::InternalClient;
 pub use client::ClaudeClient;

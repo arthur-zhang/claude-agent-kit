@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::types::{ClaudeAgentOptions, Message, Result};
 use super::{message_parser::parse_message, Query};
-use super::transport::{SubprocessCLITransport, Transport};
+use super::transport::SubprocessCLITransport;
 
 /// Prompt input type.
 pub enum PromptInput {
@@ -38,7 +38,6 @@ impl InternalClient {
         &self,
         prompt: PromptInput,
         options: ClaudeAgentOptions,
-        _transport: Option<Box<dyn Transport>>,
     ) -> Result<impl Stream<Item = Result<Message>>> {
         // Validate configuration
         let mut configured_options = options;
