@@ -10,7 +10,8 @@ use crate::types::{
     HookMatcher, PermissionResult, Result,
     ToolPermissionContext,
 };
-use super::Transport;
+use crate::internal::transport::WriteHalf;
+use tokio::process::ChildStdin;
 
 /// Query handles bidirectional control protocol on top of Transport.
 ///
@@ -21,7 +22,8 @@ use super::Transport;
 /// - Message streaming
 /// - Initialization handshake
 pub struct Query {
-    transport: Arc<Mutex<Box<dyn Transport>>>,
+    write_half: WriteHalf<ChildStdin>,
+    read_rx: Arc<Mutex<mpsc::Receiver<serde_json::Value>>>,
     is_streaming: bool,
 
     // Control protocol state
@@ -44,7 +46,8 @@ pub struct Query {
 impl Query {
     /// Create a new Query instance.
     pub fn new(
-        transport: Box<dyn Transport>,
+        write_half: WriteHalf<ChildStdin>,
+        read_rx: mpsc::Receiver<serde_json::Value>,
         is_streaming: bool,
         can_use_tool: Option<Box<dyn CanUseTool>>,
         _hooks: Option<HashMap<HookEvent, Vec<HookMatcher>>>,
@@ -52,7 +55,8 @@ impl Query {
         let (message_tx, message_rx) = mpsc::channel(100);
 
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            write_half,
+            read_rx: Arc::new(Mutex::new(read_rx)),
             is_streaming,
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             hook_callbacks: Arc::new(Mutex::new(HashMap::new())),
@@ -88,62 +92,54 @@ impl Query {
 
     /// Start reading messages from transport.
     pub async fn start(&mut self) -> Result<()> {
-        let transport = Arc::clone(&self.transport);
+        let read_rx = Arc::clone(&self.read_rx);
+        let write_half = self.write_half.clone();
         let message_tx = self.message_tx.clone();
         let pending_requests = Arc::clone(&self.pending_requests);
         let hook_callbacks = Arc::clone(&self.hook_callbacks);
         let can_use_tool = self.can_use_tool.clone();
 
         tokio::spawn(async move {
-            let mut transport_guard = transport.lock().await;
+            let mut rx = read_rx.lock().await;
 
-            match transport_guard.read_messages().await {
-                Ok(mut rx) => {
-                    drop(transport_guard); // Release lock before processing messages
+            while let Some(message) = rx.recv().await {
+                let msg_type = message.get("type").and_then(|v| v.as_str());
 
-                    while let Some(message) = rx.recv().await {
-                        let msg_type = message.get("type").and_then(|v| v.as_str());
-
-                        match msg_type {
-                            Some("control_response") => {
-                                // Handle control response
-                                if let Some(response) = message.get("response") {
-                                    if let Some(request_id) = response.get("request_id").and_then(|v| v.as_str()) {
-                                        let mut pending = pending_requests.lock().await;
-                                        if let Some(tx) = pending.remove(request_id) {
-                                            let _ = tx.send(response.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            Some("control_request") => {
-                                // Handle incoming control request
-                                let transport_clone = Arc::clone(&transport);
-                                let hook_callbacks_clone = Arc::clone(&hook_callbacks);
-                                let can_use_tool_clone = can_use_tool.clone();
-
-                                tokio::spawn(async move {
-                                    if let Err(e) = Self::handle_control_request(
-                                        message,
-                                        transport_clone,
-                                        hook_callbacks_clone,
-                                        can_use_tool_clone,
-                                    ).await {
-                                        error!("Failed to handle control request: {}", e);
-                                    }
-                                });
-                            }
-                            _ => {
-                                // Regular message - send to stream
-                                if message_tx.send(message).await.is_err() {
-                                    break;
+                match msg_type {
+                    Some("control_response") => {
+                        // Handle control response
+                        if let Some(response) = message.get("response") {
+                            if let Some(request_id) = response.get("request_id").and_then(|v| v.as_str()) {
+                                let mut pending = pending_requests.lock().await;
+                                if let Some(tx) = pending.remove(request_id) {
+                                    let _ = tx.send(response.clone());
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to read messages: {}", e);
+                    Some("control_request") => {
+                        // Handle incoming control request
+                        let write_half_clone = write_half.clone();
+                        let hook_callbacks_clone = Arc::clone(&hook_callbacks);
+                        let can_use_tool_clone = can_use_tool.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_control_request(
+                                message,
+                                write_half_clone,
+                                hook_callbacks_clone,
+                                can_use_tool_clone,
+                            ).await {
+                                error!("Failed to handle control request: {}", e);
+                            }
+                        });
+                    }
+                    _ => {
+                        // Regular message - send to stream
+                        if message_tx.send(message).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -154,7 +150,7 @@ impl Query {
     /// Handle incoming control request from CLI.
     async fn handle_control_request(
         request: serde_json::Value,
-        transport: Arc<Mutex<Box<dyn Transport>>>,
+        mut write_half: WriteHalf<ChildStdin>,
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<()> {
@@ -196,8 +192,7 @@ impl Query {
         });
 
         let response_str = serde_json::to_string(&response)? + "\n";
-        let mut transport_guard = transport.lock().await;
-        transport_guard.write(&response_str).await?;
+        write_half.write(&response_str).await?;
 
         Ok(())
     }
@@ -312,10 +307,7 @@ impl Query {
 
         let request_str = serde_json::to_string(&control_request)? + "\n";
 
-        {
-            let mut transport = self.transport.lock().await;
-            transport.write(&request_str).await?;
-        }
+        self.write_half.write(&request_str).await?;
 
         // Wait for response with timeout
         let response = tokio::time::timeout(
@@ -379,21 +371,14 @@ impl Query {
 
     /// Stream input messages to transport.
     pub async fn stream_input(&mut self, mut input_rx: mpsc::Receiver<serde_json::Value>) -> Result<()> {
-        let transport = Arc::clone(&self.transport);
-
         while let Some(message) = input_rx.recv().await {
             if self.closed {
                 break;
             }
 
             let message_str = serde_json::to_string(&message)? + "\n";
-            let mut transport_guard = transport.lock().await;
-            transport_guard.write(&message_str).await?;
+            self.write_half.write(&message_str).await?;
         }
-
-        // End input after all messages sent
-        let mut transport_guard = transport.lock().await;
-        transport_guard.end_input().await?;
 
         Ok(())
     }
@@ -405,8 +390,7 @@ impl Query {
 
     /// Write raw data to transport.
     pub async fn write(&mut self, data: &str) -> Result<()> {
-        let mut transport = self.transport.lock().await;
-        transport.write(data).await
+        self.write_half.write(data).await
     }
 
     /// Get initialization result.
@@ -418,8 +402,8 @@ impl Query {
     /// Close the query and transport.
     pub async fn close(&mut self) -> Result<()> {
         self.closed = true;
-        let mut transport = self.transport.lock().await;
-        transport.close().await
+        // WriteHalf will be dropped automatically, closing the write side
+        Ok(())
     }
 }
 
