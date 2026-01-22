@@ -1,4 +1,39 @@
 //! Subprocess transport implementation using Claude Code CLI.
+//!
+//! This module provides the core transport layer for communicating with the Claude Code CLI
+//! process via stdin/stdout/stderr. It handles process spawning, command-line argument
+//! construction, and splitting the transport into independent halves for concurrent I/O.
+//!
+//! # Architecture
+//!
+//! The transport follows a split I/O model:
+//! - **ReadHalf**: Reads JSON messages from stdout
+//! - **WriteHalf**: Writes messages to stdin
+//! - **StderrHalf**: Reads diagnostic logs from stderr
+//! - **ProcessHandle**: Manages process lifecycle
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use claude_agent_sdk::internal::transport::{SubprocessCLITransport, PromptInput};
+//! use claude_agent_sdk::ClaudeAgentOptions;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let options = ClaudeAgentOptions::new();
+//!     let prompt = PromptInput::String("Hello, Claude!".to_string());
+//!
+//!     // Create and connect transport
+//!     let mut transport = SubprocessCLITransport::new(prompt, options)?;
+//!     transport.connect().await?;
+//!
+//!     // Split into independent halves
+//!     let (read_half, write_half, stderr_half, process_handle) = transport.split()?;
+//!
+//!     // Now you can use each half independently
+//!     Ok(())
+//! }
+//! ```
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -21,6 +56,36 @@ type SplitSubprocess = (
 );
 
 /// Subprocess transport using Claude Code CLI.
+///
+/// This is the main transport implementation that manages the Claude Code CLI process.
+/// It handles process spawning, configuration, and provides the ability to split into
+/// independent I/O halves for concurrent communication.
+///
+/// # Lifecycle
+///
+/// 1. Create with `new()` - validates configuration and locates CLI binary
+/// 2. Connect with `connect()` - spawns the CLI process
+/// 3. Split with `split()` - separates into independent I/O components
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use claude_agent_sdk::internal::transport::{SubprocessCLITransport, PromptInput};
+/// use claude_agent_sdk::ClaudeAgentOptions;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let options = ClaudeAgentOptions::new();
+///     let prompt = PromptInput::String("What is Rust?".to_string());
+///
+///     let mut transport = SubprocessCLITransport::new(prompt, options)?;
+///     transport.connect().await?;
+///
+///     let (read_half, write_half, stderr_half, process_handle) = transport.split()?;
+///     // Use the halves independently...
+///     Ok(())
+/// }
+/// ```
 pub struct SubprocessCLITransport {
     prompt: PromptInput,
     options: ClaudeAgentOptions,
@@ -30,6 +95,24 @@ pub struct SubprocessCLITransport {
 }
 
 /// Prompt input type (string or streaming).
+///
+/// Determines how the initial prompt is provided to the Claude CLI:
+/// - `String`: A single string prompt sent immediately
+/// - `Stream`: A stream of JSON messages for interactive/streaming mode
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use claude_agent_sdk::internal::transport::PromptInput;
+/// use tokio::sync::mpsc;
+///
+/// // String prompt
+/// let prompt1 = PromptInput::String("Hello!".to_string());
+///
+/// // Streaming prompt
+/// let (tx, rx) = mpsc::channel(10);
+/// let prompt2 = PromptInput::Stream(rx);
+/// ```
 pub enum PromptInput {
     String(String),
     Stream(mpsc::Receiver<serde_json::Value>),
@@ -37,6 +120,33 @@ pub enum PromptInput {
 
 impl SubprocessCLITransport {
     /// Create a new subprocess transport.
+    ///
+    /// This validates the configuration and locates the Claude Code CLI binary.
+    /// The CLI is searched for in the following order:
+    /// 1. Path specified in `options.cli_path`
+    /// 2. System PATH
+    /// 3. Common installation locations (~/.npm-global/bin, /usr/local/bin, etc.)
+    ///
+    /// # Arguments
+    ///
+    /// * `prompt` - Initial prompt (string or stream)
+    /// * `options` - Configuration options for the Claude CLI
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Claude CLI binary cannot be found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::internal::transport::{SubprocessCLITransport, PromptInput};
+    /// use claude_agent_sdk::ClaudeAgentOptions;
+    ///
+    /// let options = ClaudeAgentOptions::new();
+    /// let prompt = PromptInput::String("Hello!".to_string());
+    /// let transport = SubprocessCLITransport::new(prompt, options)?;
+    /// # Ok::<(), claude_agent_sdk::types::Error>(())
+    /// ```
     pub fn new(prompt: PromptInput, options: ClaudeAgentOptions) -> Result<Self> {
         let cli_path = if let Some(ref path) = options.cli_path {
             path.clone()
@@ -311,17 +421,67 @@ impl SubprocessCLITransport {
 
     /// Split the transport into independent read/write/stderr halves and process handle.
     ///
-    /// This consumes the transport and returns four independent components:
-    /// - ReadHalf: for reading stdout
-    /// - WriteHalf: for writing to stdin
-    /// - StderrHalf: for reading stderr
-    /// - ProcessHandle: for managing the process lifecycle
+    /// This consumes the transport and returns four independent components that can be
+    /// used concurrently:
+    /// - **ReadHalf**: for reading JSON messages from stdout
+    /// - **WriteHalf**: for writing messages to stdin
+    /// - **StderrHalf**: for reading diagnostic logs from stderr
+    /// - **ProcessHandle**: for managing the process lifecycle (kill, wait, etc.)
+    ///
+    /// Each component can be moved to different tasks or threads for concurrent I/O operations.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(ReadHalf, WriteHalf, StderrHalf, ProcessHandle)`
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The process has not been started (call `connect()` first)
     /// - stdin, stdout, or stderr are not available
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::internal::transport::{SubprocessCLITransport, PromptInput};
+    /// use claude_agent_sdk::ClaudeAgentOptions;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let prompt = PromptInput::String("Hello!".to_string());
+    ///
+    ///     let mut transport = SubprocessCLITransport::new(prompt, options)?;
+    ///     transport.connect().await?;
+    ///
+    ///     // Split into independent halves
+    ///     let (read_half, mut write_half, stderr_half, mut process_handle) = transport.split()?;
+    ///
+    ///     // Start reading messages in a background task
+    ///     let mut message_rx = read_half.read_messages();
+    ///     tokio::spawn(async move {
+    ///         while let Some(msg) = message_rx.recv().await {
+    ///             println!("Received: {:?}", msg);
+    ///         }
+    ///     });
+    ///
+    ///     // Start reading stderr in another task
+    ///     let mut stderr_rx = stderr_half.read_lines();
+    ///     tokio::spawn(async move {
+    ///         while let Some(line) = stderr_rx.recv().await {
+    ///             eprintln!("stderr: {}", line);
+    ///         }
+    ///     });
+    ///
+    ///     // Write messages from main task
+    ///     write_half.write("{\"type\":\"ping\"}\n").await?;
+    ///
+    ///     // Wait for process to complete
+    ///     process_handle.wait().await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn split(mut self) -> Result<SplitSubprocess> {
         // Ensure process is started
         let mut child = self.process.take().ok_or_else(|| {
@@ -355,7 +515,34 @@ impl SubprocessCLITransport {
 
     /// Connect the transport and prepare for communication.
     ///
-    /// This starts the Claude CLI process and sets up stdio pipes.
+    /// This starts the Claude CLI process with the configured options and sets up
+    /// stdio pipes for communication. The process is spawned with:
+    /// - stdin: piped (for sending messages)
+    /// - stdout: piped (for receiving JSON messages)
+    /// - stderr: piped (for diagnostic logs)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the process fails to spawn.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::internal::transport::{SubprocessCLITransport, PromptInput};
+    /// use claude_agent_sdk::ClaudeAgentOptions;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let prompt = PromptInput::String("Hello!".to_string());
+    ///
+    ///     let mut transport = SubprocessCLITransport::new(prompt, options)?;
+    ///     transport.connect().await?;
+    ///
+    ///     assert!(transport.is_ready());
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn connect(&mut self) -> Result<()> {
         if self.process.is_some() {
             return Ok(());

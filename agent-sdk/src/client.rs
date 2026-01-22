@@ -402,10 +402,39 @@ impl ClaudeClient {
     /// Get the stderr receiver (can only be called once).
     ///
     /// Returns the receiver for stderr lines from the Claude CLI process.
-    /// This can only be called once - subsequent calls will return None.
+    /// This allows you to monitor diagnostic logs and debug output from the CLI.
+    ///
+    /// **Important**: This can only be called once - subsequent calls will return None.
+    /// The receiver is moved out of the client, so you must store it if you need it.
     ///
     /// # Returns
+    ///
     /// The stderr receiver, or None if already taken or not connected
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let mut client = ClaudeClient::new(options);
+    ///     client.connect(None).await?;
+    ///
+    ///     // Get stderr receiver and spawn a task to monitor it
+    ///     if let Some(mut stderr_rx) = client.stderr_receiver() {
+    ///         tokio::spawn(async move {
+    ///             while let Some(line) = stderr_rx.recv().await {
+    ///                 eprintln!("Claude CLI: {}", line);
+    ///             }
+    ///         });
+    ///     }
+    ///
+    ///     // Continue using the client...
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn stderr_receiver(&mut self) -> Option<mpsc::Receiver<String>> {
         self.stderr_rx.take()
     }
@@ -413,10 +442,47 @@ impl ClaudeClient {
     /// Get the process handle (can only be called once).
     ///
     /// Returns the handle for managing the Claude CLI process lifecycle.
-    /// This can only be called once - subsequent calls will return None.
+    /// This allows you to monitor the process status, wait for completion,
+    /// or forcefully terminate the process if needed.
+    ///
+    /// **Important**: This can only be called once - subsequent calls will return None.
+    /// The handle is moved out of the client, so you must store it if you need it.
     ///
     /// # Returns
+    ///
     /// The process handle, or None if already taken or not connected
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let mut client = ClaudeClient::new(options);
+    ///     client.connect(None).await?;
+    ///
+    ///     // Get process handle for lifecycle management
+    ///     if let Some(mut handle) = client.process_handle() {
+    ///         // Check process ID
+    ///         if let Some(pid) = handle.id() {
+    ///             println!("Claude CLI process ID: {}", pid);
+    ///         }
+    ///
+    ///         // Spawn a task to monitor process status
+    ///         tokio::spawn(async move {
+    ///             match handle.wait().await {
+    ///                 Ok(status) => println!("Process exited with: {:?}", status),
+    ///                 Err(e) => eprintln!("Error waiting for process: {}", e),
+    ///             }
+    ///         });
+    ///     }
+    ///
+    ///     // Continue using the client...
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn process_handle(&mut self) -> Option<ProcessHandle> {
         self.process_handle.take()
     }
