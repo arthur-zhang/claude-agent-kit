@@ -5,8 +5,8 @@ use futures::Stream;
 use tokio::sync::mpsc;
 
 use crate::types::{ClaudeAgentOptions, Message, Result};
-use super::{message_parser::parse_message, Query, Transport};
-use super::transport::SubprocessCLITransport;
+use super::{message_parser::parse_message, Query};
+use super::transport::{SubprocessCLITransport, Transport};
 
 /// Prompt input type.
 pub enum PromptInput {
@@ -30,7 +30,7 @@ impl InternalClient {
     /// # Arguments
     /// * `prompt` - Prompt input (string or stream)
     /// * `options` - Claude agent options
-    /// * `transport` - Optional custom transport (defaults to SubprocessCLITransport)
+    /// * `_transport` - Optional custom transport (deprecated, not used in new API)
     ///
     /// # Returns
     /// Stream of parsed messages
@@ -38,7 +38,7 @@ impl InternalClient {
         &self,
         prompt: PromptInput,
         options: ClaudeAgentOptions,
-        transport: Option<Box<dyn Transport>>,
+        _transport: Option<Box<dyn Transport>>,
     ) -> Result<impl Stream<Item = Result<Message>>> {
         // Validate configuration
         let mut configured_options = options;
@@ -71,30 +71,31 @@ impl InternalClient {
         let can_use_tool = configured_options.can_use_tool.take();
         let hooks = configured_options.hooks.take();
 
-        // Create or use provided transport
-        let chosen_transport: Box<dyn Transport> = if let Some(t) = transport {
-            t
-        } else {
-            // Create subprocess transport
-            let prompt_input = match prompt {
-                PromptInput::String(s) => {
-                    super::transport::PromptInput::String(s)
-                }
-                PromptInput::Stream(rx) => {
-                    super::transport::PromptInput::Stream(rx)
-                }
-            };
-
-            Box::new(SubprocessCLITransport::new(prompt_input, configured_options)?)
+        // Create subprocess transport (custom transport not supported in new API)
+        let prompt_input = match prompt {
+            PromptInput::String(s) => {
+                super::transport::PromptInput::String(s)
+            }
+            PromptInput::Stream(rx) => {
+                super::transport::PromptInput::Stream(rx)
+            }
         };
 
-        // Connect transport
-        let mut transport_mut = chosen_transport;
-        transport_mut.connect().await?;
+        let mut subprocess_transport = SubprocessCLITransport::new(prompt_input, configured_options)?;
 
-        // Create Query to handle control protocol
+        // Connect transport
+        subprocess_transport.connect().await?;
+
+        // Split transport into independent halves
+        let (read_half, write_half, _stderr_half, _process_handle) = subprocess_transport.split()?;
+
+        // Start reading messages
+        let read_rx = read_half.read_messages();
+
+        // Create Query with write_half and read_rx
         let mut query = Query::new(
-            transport_mut,
+            write_half,
+            read_rx,
             is_streaming,
             can_use_tool,
             hooks,

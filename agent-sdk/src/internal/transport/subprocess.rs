@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
@@ -425,24 +425,10 @@ impl Transport for SubprocessCLITransport {
     }
 
     async fn read_messages(&self) -> Result<mpsc::Receiver<serde_json::Value>> {
-        let (tx, rx) = mpsc::channel(100);
-
-        if let Some(stdout) = self.stdout.take() {
-            tokio::spawn(async move {
-                let reader = BufReader::new(stdout);
-                let mut lines = reader.lines();
-
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                        if tx.send(json).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-            });
-        }
-
-        Ok(rx)
+        // This method is deprecated in favor of using split() and ReadHalf::read_messages()
+        Err(Error::Process(
+            "read_messages() is not supported after split(). Use split() to get ReadHalf and call read_messages() on it.".to_string()
+        ))
     }
 
     async fn close(&mut self) -> Result<()> {

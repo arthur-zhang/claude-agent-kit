@@ -6,8 +6,8 @@ use std::pin::Pin;
 use tokio::sync::mpsc;
 
 use crate::types::{ClaudeAgentOptions, Error, Message, Result};
-use crate::internal::{Query, Transport};
-use crate::internal::transport::{SubprocessCLITransport, PromptInput as TransportPromptInput};
+use crate::internal::Query;
+use crate::internal::transport::{ProcessHandle, SubprocessCLITransport, PromptInput as TransportPromptInput, Transport};
 
 /// Prompt input for client operations.
 pub enum ClientPromptInput {
@@ -48,7 +48,7 @@ pub enum ClientPromptInput {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let options = ClaudeAgentOptions::new();
-///     let mut client = ClaudeClient::new(options, None);
+///     let mut client = ClaudeClient::new(options);
 ///
 ///     // Connect to Claude
 ///     client.connect(None).await?;
@@ -72,8 +72,9 @@ pub enum ClientPromptInput {
 /// ```
 pub struct ClaudeClient {
     options: ClaudeAgentOptions,
-    custom_transport: Option<Box<dyn Transport>>,
     query: Option<Query>,
+    stderr_rx: Option<mpsc::Receiver<String>>,
+    process_handle: Option<ProcessHandle>,
 }
 
 impl ClaudeClient {
@@ -81,15 +82,12 @@ impl ClaudeClient {
     ///
     /// # Arguments
     /// * `options` - Configuration options for the client
-    /// * `transport` - Optional custom transport (defaults to SubprocessCLITransport)
-    pub fn new(
-        options: ClaudeAgentOptions,
-        transport: Option<Box<dyn Transport>>,
-    ) -> Self {
+    pub fn new(options: ClaudeAgentOptions) -> Self {
         Self {
             options,
-            custom_transport: transport,
             query: None,
+            stderr_rx: None,
+            process_handle: None,
         }
     }
 
@@ -140,19 +138,21 @@ impl ClaudeClient {
         let can_use_tool = self.options.can_use_tool.take();
         let hooks = self.options.hooks.take();
 
-        // Create or use provided transport
-        let mut transport: Box<dyn Transport> = if let Some(t) = self.custom_transport.take() {
-            t
-        } else {
-            Box::new(SubprocessCLITransport::new(actual_prompt, self.options.clone())?)
-        };
-
-        // Connect transport
+        // Create and connect transport
+        let mut transport = SubprocessCLITransport::new(actual_prompt, self.options.clone())?;
         transport.connect().await?;
 
-        // Create Query to handle control protocol
+        // Split transport into independent halves
+        let (read_half, write_half, stderr_half, process_handle) = transport.split()?;
+
+        // Start reading messages and stderr
+        let read_rx = read_half.read_messages();
+        let stderr_rx = stderr_half.read_lines();
+
+        // Create Query with write_half and read_rx
         let mut query = Query::new(
-            transport,
+            write_half,
+            read_rx,
             true, // ClaudeClient always uses streaming mode
             can_use_tool,
             hooks,
@@ -163,6 +163,8 @@ impl ClaudeClient {
         query.initialize().await?;
 
         self.query = Some(query);
+        self.stderr_rx = Some(stderr_rx);
+        self.process_handle = Some(process_handle);
 
         Ok(())
     }
@@ -384,6 +386,28 @@ impl ClaudeClient {
         }
         Ok(())
     }
+
+    /// Get the stderr receiver (can only be called once).
+    ///
+    /// Returns the receiver for stderr lines from the Claude CLI process.
+    /// This can only be called once - subsequent calls will return None.
+    ///
+    /// # Returns
+    /// The stderr receiver, or None if already taken or not connected
+    pub fn stderr_receiver(&mut self) -> Option<mpsc::Receiver<String>> {
+        self.stderr_rx.take()
+    }
+
+    /// Get the process handle (can only be called once).
+    ///
+    /// Returns the handle for managing the Claude CLI process lifecycle.
+    /// This can only be called once - subsequent calls will return None.
+    ///
+    /// # Returns
+    /// The process handle, or None if already taken or not connected
+    pub fn process_handle(&mut self) -> Option<ProcessHandle> {
+        self.process_handle.take()
+    }
 }
 
 // Implement Drop to ensure cleanup
@@ -404,14 +428,14 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let options = ClaudeAgentOptions::new();
-        let client = ClaudeClient::new(options, None);
+        let client = ClaudeClient::new(options);
         assert!(client.query.is_none());
     }
 
     #[tokio::test]
     async fn test_connect_without_prompt() {
         let options = ClaudeAgentOptions::new();
-        let mut client = ClaudeClient::new(options, None);
+        let mut client = ClaudeClient::new(options);
 
         // This will fail without a real CLI, but tests the structure
         let result = client.connect(None).await;

@@ -24,7 +24,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> StderrHalf<R> {
     /// from stderr and sends them through the channel.
     pub fn read_lines(self) -> mpsc::Receiver<String> {
         let (tx, rx) = mpsc::channel(100);
-        let mut reader = self.reader;
+        let reader = self.reader;
 
         tokio::spawn(async move {
             let mut lines = reader.lines();

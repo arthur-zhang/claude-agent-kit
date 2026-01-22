@@ -22,7 +22,7 @@ use tokio::process::ChildStdin;
 /// - Message streaming
 /// - Initialization handshake
 pub struct Query {
-    write_half: WriteHalf<ChildStdin>,
+    write_half: Arc<Mutex<WriteHalf<ChildStdin>>>,
     read_rx: Arc<Mutex<mpsc::Receiver<serde_json::Value>>>,
     is_streaming: bool,
 
@@ -55,7 +55,7 @@ impl Query {
         let (message_tx, message_rx) = mpsc::channel(100);
 
         Self {
-            write_half,
+            write_half: Arc::new(Mutex::new(write_half)),
             read_rx: Arc::new(Mutex::new(read_rx)),
             is_streaming,
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
@@ -93,7 +93,7 @@ impl Query {
     /// Start reading messages from transport.
     pub async fn start(&mut self) -> Result<()> {
         let read_rx = Arc::clone(&self.read_rx);
-        let write_half = self.write_half.clone();
+        let write_half = Arc::clone(&self.write_half);
         let message_tx = self.message_tx.clone();
         let pending_requests = Arc::clone(&self.pending_requests);
         let hook_callbacks = Arc::clone(&self.hook_callbacks);
@@ -119,7 +119,7 @@ impl Query {
                     }
                     Some("control_request") => {
                         // Handle incoming control request
-                        let write_half_clone = write_half.clone();
+                        let write_half_clone = Arc::clone(&write_half);
                         let hook_callbacks_clone = Arc::clone(&hook_callbacks);
                         let can_use_tool_clone = can_use_tool.clone();
 
@@ -150,7 +150,7 @@ impl Query {
     /// Handle incoming control request from CLI.
     async fn handle_control_request(
         request: serde_json::Value,
-        mut write_half: WriteHalf<ChildStdin>,
+        write_half: Arc<Mutex<WriteHalf<ChildStdin>>>,
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<()> {
@@ -192,7 +192,8 @@ impl Query {
         });
 
         let response_str = serde_json::to_string(&response)? + "\n";
-        write_half.write(&response_str).await?;
+        let mut write_guard = write_half.lock().await;
+        write_guard.write(&response_str).await?;
 
         Ok(())
     }
@@ -307,7 +308,9 @@ impl Query {
 
         let request_str = serde_json::to_string(&control_request)? + "\n";
 
-        self.write_half.write(&request_str).await?;
+        let mut write_guard = self.write_half.lock().await;
+        write_guard.write(&request_str).await?;
+        drop(write_guard); // Release lock before waiting for response
 
         // Wait for response with timeout
         let response = tokio::time::timeout(
@@ -377,7 +380,8 @@ impl Query {
             }
 
             let message_str = serde_json::to_string(&message)? + "\n";
-            self.write_half.write(&message_str).await?;
+            let mut write_guard = self.write_half.lock().await;
+            write_guard.write(&message_str).await?;
         }
 
         Ok(())
@@ -390,7 +394,8 @@ impl Query {
 
     /// Write raw data to transport.
     pub async fn write(&mut self, data: &str) -> Result<()> {
-        self.write_half.write(data).await
+        let mut write_guard = self.write_half.lock().await;
+        write_guard.write(data).await
     }
 
     /// Get initialization result.
