@@ -175,7 +175,8 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected or write fails
-    pub async fn query_string(&mut self, prompt: &str, session_id: &str) -> Result<()> {
+    pub async fn query_string(&mut self, prompt: &str, session_id: Option<String>) -> Result<()> {
+        let session_id = session_id.unwrap_or("default".into());
         let query = self.query.as_mut()
             .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
 

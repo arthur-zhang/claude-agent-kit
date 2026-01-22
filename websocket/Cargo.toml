@@ -1,7 +1,7 @@
 [package]
 name = "websocket"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 axum = { version = "0.7", features = ["ws"] }
@@ -15,6 +15,7 @@ futures = "0.3"
 claude-agent-sdk = { path = "../agent-sdk" }
 async-stream = "0.3"
 tower-http = { version = "0.6", features = ["fs"] }
+dashmap = "6"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

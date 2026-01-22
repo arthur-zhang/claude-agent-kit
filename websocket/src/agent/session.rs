@@ -1,14 +1,16 @@
 //! Agent session for managing WebSocket-Agent communication.
 
-use crate::agent::client::PooledAgent;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use claude_agent_sdk::Error;
+use claude_agent_sdk::{ClaudeClient, Error};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use dashmap::DashMap;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
+use claude_agent_sdk::Message::System;
 
 /// Manages a single WebSocket connection's agent session.
 pub struct AgentSession {
@@ -27,35 +29,114 @@ impl AgentSession {
     }
 
     /// Run the session, forwarding messages between WebSocket and Agent.
-    pub async fn run(self, websocket: WebSocket, mut agent: PooledAgent) -> Result<(), Error> {
-        info!("Starting agent session {}", self.session_id);
+    pub async fn run(
+        self,
+        websocket: WebSocket,
+        client: Arc<Mutex<ClaudeClient>>,
+        session_id: String,
+    ) -> Result<(), Error> {
+        info!("Starting agent session {} with session_id {}", self.session_id, session_id);
 
         // Split websocket
         let (mut ws_sender, mut ws_receiver) = websocket.split();
 
-        // Create a channel for incoming WebSocket messages
-        let (ws_msg_tx, mut ws_msg_rx) = mpsc::unbounded_channel();
+        let session_id_map  = Arc::new(DashMap::new());
+        // Get two clones of the client for separate tasks
+        let client_for_receive = Arc::clone(&client);
+        let client_for_send = Arc::clone(&client);
 
-        // Spawn task to receive WebSocket messages and forward to channel
-        let ws_recv_task = tokio::spawn(async move {
-            while let Some(msg_result) = ws_receiver.next().await {
-                if ws_msg_tx.send(msg_result).is_err() {
-                    break;
+        // Create channel for agent messages
+        let (agent_msg_tx, mut agent_msg_rx) = mpsc::unbounded_channel();
+
+        // Spawn task to receive agent messages
+        let receive_task = tokio::spawn({
+            let session_id = session_id.clone();
+            let session_id_map = session_id_map.clone();
+            async move {
+                let mut client_guard = client_for_receive.lock().await;
+
+                let mut agent_stream = match client_guard.receive_messages().await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        error!("Failed to get agent stream: {}", e);
+                        return;
+                    }
+                };
+
+                while let Some(msg_result) = agent_stream.next().await {
+                    if let Ok(System(ref system_message)) = msg_result && system_message.subtype == "init"  {
+                        // todo
+                        let cc_session_id = system_message.data.get("session_id").unwrap().as_str().unwrap();
+                        session_id_map.insert(session_id.clone(), cc_session_id.to_string());
+                    }
+
+
+                    if agent_msg_tx.send(msg_result).is_err() {
+                        break;
+                    }
                 }
             }
         });
 
-        // Main loop: handle both agent stream and websocket messages
-        // Note: We create the agent stream inside the loop after each query
-        // This is because the stream borrows the agent, preventing us from using it for queries
-        // For now, we'll use a simplified approach that doesn't support bidirectional streaming
+
+
+        // Main loop: handle WebSocket and agent messages
         loop {
             tokio::select! {
+                // Handle messages from agent
+                Some(msg_result) = agent_msg_rx.recv() => {
+                    match msg_result {
+                        Ok(message) => {
+                            debug!("Received agent message {message:?}");
+
+                            let json = match serde_json::to_string(&message) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    error!("Failed to serialize: {}", e);
+                                    continue;
+                                }
+                            };
+
+                            match tokio::time::timeout(
+                                Duration::from_secs(5),
+                                ws_sender.send(WsMessage::Text(json))
+                            ).await {
+                                Ok(Ok(_)) => {},
+                                Ok(Err(e)) => {
+                                    warn!("Failed to send to WebSocket: {}", e);
+                                    break;
+                                }
+                                Err(_) => {
+                                    warn!("Timeout sending to WebSocket");
+                                    break;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error in agent stream: {}", e);
+
+                            // Send error message to client
+                            let error_json = json!({
+                                "type": "error",
+                                "error": format!("Agent error: {}", e)
+                            });
+                            if let Ok(error_str) = serde_json::to_string(&error_json) {
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    ws_sender.send(WsMessage::Text(error_str))
+                                ).await;
+                            }
+
+                            break;
+                        }
+                    }
+                }
+
                 // Handle incoming WebSocket messages
-                Some(ws_msg_result) = ws_msg_rx.recv() => {
+                Some(ws_msg_result) = ws_receiver.next() => {
                     match ws_msg_result {
                         Ok(WsMessage::Text(text)) => {
-                            debug!("Received WebSocket message");
+                            debug!("Received WebSocket message {text}");
 
                             let json: Value = match serde_json::from_str(&text) {
                                 Ok(v) => v,
@@ -70,12 +151,17 @@ impl AgentSession {
                                 .and_then(|c| c.as_str())
                                 .unwrap_or("");
 
-                            let session_id = json.get("session_id")
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("default");
+                            // Send query using a brief lock on the send client
+                            let send_result = {
+                                let mut client_guard = client_for_send.lock().await;
 
-                            // Query the agent and get the response stream
-                            if let Err(e) = agent.client_mut().query_string(prompt, session_id).await {
+                                // todo
+                                let cc_session_id = session_id_map.get(&session_id).map(|it|it.clone());
+                                info!("start query>>>>>>>>>>{session_id}, {cc_session_id:?}");
+                                client_guard.query_string(prompt, cc_session_id).await
+                            };
+
+                            if let Err(e) = send_result {
                                 error!("Failed to query agent: {}", e);
 
                                 // Send error message to client
@@ -93,61 +179,7 @@ impl AgentSession {
                                 break;
                             }
 
-                            // Get response stream
-                            match agent.client_mut().receive_response().await {
-                                Ok(mut response_stream) => {
-                                    // Forward all messages from this response to WebSocket
-                                    while let Some(msg_result) = response_stream.next().await {
-                                        match msg_result {
-                                            Ok(message) => {
-                                                let json = match serde_json::to_string(&message) {
-                                                    Ok(s) => s,
-                                                    Err(e) => {
-                                                        error!("Failed to serialize: {}", e);
-                                                        continue;
-                                                    }
-                                                };
-
-                                                match tokio::time::timeout(
-                                                    Duration::from_secs(5),
-                                                    ws_sender.send(WsMessage::Text(json))
-                                                ).await {
-                                                    Ok(Ok(_)) => {},
-                                                    Ok(Err(e)) => {
-                                                        warn!("Failed to send to WebSocket: {}", e);
-                                                        break;
-                                                    }
-                                                    Err(_) => {
-                                                        warn!("Timeout sending to WebSocket");
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("Error in response stream: {}", e);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to get response stream: {}", e);
-
-                                    // Send error message to client
-                                    let error_json = json!({
-                                        "type": "error",
-                                        "error": format!("Failed to get response stream: {}", e)
-                                    });
-                                    if let Ok(error_str) = serde_json::to_string(&error_json) {
-                                        let _ = tokio::time::timeout(
-                                            Duration::from_secs(5),
-                                            ws_sender.send(WsMessage::Text(error_str))
-                                        ).await;
-                                    }
-
-                                    break;
-                                }
-                            }
+                            // Response will come through the agent_stream in the other select branch
                         }
                         Ok(WsMessage::Close(_)) => {
                             info!("WebSocket closed");
@@ -160,19 +192,16 @@ impl AgentSession {
                         _ => {}
                     }
                 }
+
                 else => break,
             }
         }
 
-        // Clean up - abort the WebSocket receive task
-        ws_recv_task.abort();
-
-        // Disconnect agent and log any errors
-        if let Err(e) = agent.disconnect().await {
-            error!("Failed to disconnect agent: {}", e);
-        }
+        // Clean up - abort the receive task
+        receive_task.abort();
 
         info!("Agent session {} ended", self.session_id);
+
         Ok(())
     }
 

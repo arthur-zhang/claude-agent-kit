@@ -116,6 +116,10 @@
         <div id="status" class="status disconnected">Disconnected</div>
 
         <div class="controls">
+            <input type="text" id="sessionId" placeholder="Session ID (leave empty for auto-generated UUID)" />
+        </div>
+
+        <div class="controls">
             <button id="connect">Connect</button>
             <button id="disconnect" disabled>Disconnect</button>
             <button id="clear">Clear Messages</button>
@@ -151,6 +155,7 @@
         const statusEl = document.getElementById('status');
         const messagesEl = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
+        const sessionIdInput = document.getElementById('sessionId');
         const connectBtn = document.getElementById('connect');
         const disconnectBtn = document.getElementById('disconnect');
         const sendBtn = document.getElementById('send');
@@ -196,10 +201,15 @@
         }
 
         function connect() {
-            ws = new WebSocket('ws://localhost:3000/ws');
+            const sessionId = sessionIdInput.value.trim();
+            const wsUrl = sessionId
+                ? `ws://localhost:3000/ws?session_id=${encodeURIComponent(sessionId)}`
+                : 'ws://localhost:3000/ws';
+
+            ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
-                addMessage('WebSocket connection established', 'sent');
+                addMessage(`WebSocket connection established${sessionId ? ' with session: ' + sessionId : ''}`, 'sent');
                 setConnected(true);
             };
 

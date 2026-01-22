@@ -1,5 +1,4 @@
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use websocket::agent::AgentPoolConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,11 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Read pool config from environment
-    let pool_config = AgentPoolConfig::default();
-
-    // Create router with agent pool
-    let app = websocket::server::create_router(pool_config).await?;
+    // Create router with session manager
+    let app = websocket::server::create_router().await?;
 
     // Start server
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
