@@ -22,12 +22,12 @@ pub trait Transport: Send + Sync {
     ///
     /// # Arguments
     /// * `data` - Raw string data to write (typically JSON + newline)
-    async fn write(&mut self, data: &str) -> Result<()>;
+    async fn write(&self, data: &str) -> Result<()>;
 
     /// Read and parse messages from the transport.
     ///
     /// Returns a receiver that yields parsed JSON messages from the transport.
-    async fn read_messages(&mut self) -> Result<mpsc::Receiver<serde_json::Value>>;
+    async fn read_messages(&self) -> Result<mpsc::Receiver<serde_json::Value>>;
 
     /// Close the transport connection and clean up resources.
     async fn close(&mut self) -> Result<()>;

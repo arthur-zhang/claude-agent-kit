@@ -3,14 +3,14 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{mpsc, Mutex};
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
-use crate::types::{ClaudeAgentOptions, Result, Error};
 use super::Transport;
+use crate::types::{ClaudeAgentOptions, Error, Result};
 
 const _DEFAULT_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
 const _MINIMUM_CLAUDE_CODE_VERSION: &str = "2.0.0";
@@ -22,6 +22,7 @@ pub struct SubprocessCLITransport {
     cli_path: PathBuf,
     process: Option<Child>,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
+    stdout: Option<ChildStdout>,
     ready: bool,
 }
 
@@ -46,6 +47,7 @@ impl SubprocessCLITransport {
             cli_path,
             process: None,
             stdin: None,
+            stdout: None,
             ready: false,
         })
     }
@@ -183,7 +185,12 @@ impl SubprocessCLITransport {
         // Permission mode
         if let Some(ref mode) = self.options.permission_mode {
             cmd.push("--permission-mode".to_string());
-            cmd.push(serde_json::to_string(mode).unwrap_or_default().trim_matches('"').to_string());
+            cmd.push(
+                serde_json::to_string(mode)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_string(),
+            );
         }
 
         // Continue conversation
@@ -239,8 +246,14 @@ impl SubprocessCLITransport {
 
         // Setting sources
         if let Some(ref sources) = self.options.setting_sources {
-            let sources_str = sources.iter()
-                .map(|s| serde_json::to_string(s).unwrap_or_default().trim_matches('"').to_string())
+            let sources_str = sources
+                .iter()
+                .map(|s| {
+                    serde_json::to_string(s)
+                        .unwrap_or_default()
+                        .trim_matches('"')
+                        .to_string()
+                })
                 .collect::<Vec<_>>()
                 .join(",");
             cmd.push("--setting-sources".to_string());
@@ -331,11 +344,13 @@ impl Transport for SubprocessCLITransport {
         }
 
         // Spawn process
-        let mut child = command.spawn()
+        let mut child = command
+            .spawn()
             .map_err(|e| Error::Process(format!("Failed to spawn Claude CLI: {}", e)))?;
 
         // Take stdin
         self.stdin = child.stdin.take().map(|s| Arc::new(Mutex::new(s)));
+        self.stdout = child.stdout.take();
         self.process = Some(child);
         self.ready = true;
 
@@ -343,37 +358,36 @@ impl Transport for SubprocessCLITransport {
         Ok(())
     }
 
-    async fn write(&mut self, data: &str) -> Result<()> {
+    async fn write(&self, data: &str) -> Result<()> {
         if let Some(ref stdin) = self.stdin {
             let mut stdin_guard = stdin.lock().await;
-            stdin_guard.write_all(data.as_bytes()).await
+            stdin_guard
+                .write_all(data.as_bytes())
+                .await
                 .map_err(|e| Error::Io(e))?;
-            stdin_guard.flush().await
-                .map_err(|e| Error::Io(e))?;
+            stdin_guard.flush().await.map_err(|e| Error::Io(e))?;
             Ok(())
         } else {
             Err(Error::Process("stdin not available".to_string()))
         }
     }
 
-    async fn read_messages(&mut self) -> Result<mpsc::Receiver<serde_json::Value>> {
+    async fn read_messages(&self) -> Result<mpsc::Receiver<serde_json::Value>> {
         let (tx, rx) = mpsc::channel(100);
 
-        if let Some(ref mut process) = self.process {
-            if let Some(stdout) = process.stdout.take() {
-                tokio::spawn(async move {
-                    let reader = BufReader::new(stdout);
-                    let mut lines = reader.lines();
+        if let Some(stdout) = self.stdout.take() {
+            tokio::spawn(async move {
+                let reader = BufReader::new(stdout);
+                let mut lines = reader.lines();
 
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if tx.send(json).await.is_err() {
-                                break;
-                            }
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if tx.send(json).await.is_err() {
+                            break;
                         }
                     }
-                });
-            }
+                }
+            });
         }
 
         Ok(rx)
@@ -420,10 +434,8 @@ mod tests {
     #[test]
     fn test_build_command() {
         let options = ClaudeAgentOptions::new();
-        let transport = SubprocessCLITransport::new(
-            PromptInput::String("test".to_string()),
-            options,
-        ).unwrap();
+        let transport =
+            SubprocessCLITransport::new(PromptInput::String("test".to_string()), options).unwrap();
 
         let cmd = transport.build_command();
         assert!(cmd.contains(&"--output-format".to_string()));
