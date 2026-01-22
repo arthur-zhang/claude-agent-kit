@@ -34,7 +34,7 @@ impl ProcessHandle {
     }
 
     /// Check if the process has exited without blocking.
-    pub async fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
         self.child
             .try_wait()
             .map_err(|e| Error::Process(format!("Failed to check process status: {}", e)))
