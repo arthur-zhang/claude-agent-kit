@@ -2,9 +2,8 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use super::{ProcessHandle, ReadHalf, StderrHalf, WriteHalf};
@@ -19,8 +18,6 @@ pub struct SubprocessCLITransport {
     options: ClaudeAgentOptions,
     cli_path: PathBuf,
     process: Option<Child>,
-    stdin: Option<Arc<Mutex<ChildStdin>>>,
-    stdout: Option<ChildStdout>,
     ready: bool,
 }
 
@@ -44,8 +41,6 @@ impl SubprocessCLITransport {
             options,
             cli_path,
             process: None,
-            stdin: None,
-            stdout: None,
             ready: false,
         })
     }
@@ -394,13 +389,10 @@ impl SubprocessCLITransport {
         }
 
         // Spawn process
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|e| Error::Process(format!("Failed to spawn Claude CLI: {}", e)))?;
 
-        // Take stdin
-        self.stdin = child.stdin.take().map(|s| Arc::new(Mutex::new(s)));
-        self.stdout = child.stdout.take();
         self.process = Some(child);
         self.ready = true;
 
