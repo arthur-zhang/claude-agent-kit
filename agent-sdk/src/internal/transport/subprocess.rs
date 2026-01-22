@@ -428,4 +428,50 @@ mod tests {
         assert!(cmd.contains(&"--output-format".to_string()));
         assert!(cmd.contains(&"stream-json".to_string()));
     }
+
+    #[test]
+    fn test_split_without_connect() {
+        // Test that split() fails if connect() hasn't been called
+        let options = ClaudeAgentOptions::new();
+        let transport =
+            SubprocessCLITransport::new(PromptInput::String("test".to_string()), options).unwrap();
+
+        let result = transport.split();
+        assert!(result.is_err());
+        if let Err(Error::Process(msg)) = result {
+            assert!(msg.contains("Process not started"));
+        } else {
+            panic!("Expected Process error");
+        }
+    }
+
+    #[test]
+    fn test_build_command_with_options() {
+        let mut options = ClaudeAgentOptions::new();
+        options.model = Some("claude-opus-4".to_string());
+        options.max_turns = Some(10);
+        options.max_budget_usd = Some(1.5);
+
+        let transport =
+            SubprocessCLITransport::new(PromptInput::String("test".to_string()), options).unwrap();
+
+        let cmd = transport.build_command();
+        assert!(cmd.contains(&"--model".to_string()));
+        assert!(cmd.contains(&"claude-opus-4".to_string()));
+        assert!(cmd.contains(&"--max-turns".to_string()));
+        assert!(cmd.contains(&"10".to_string()));
+        assert!(cmd.contains(&"--max-budget-usd".to_string()));
+        assert!(cmd.contains(&"1.5".to_string()));
+    }
+
+    #[test]
+    fn test_build_command_with_stream_input() {
+        let options = ClaudeAgentOptions::new();
+        let (_tx, rx) = mpsc::channel(10);
+        let transport = SubprocessCLITransport::new(PromptInput::Stream(rx), options).unwrap();
+
+        let cmd = transport.build_command();
+        assert!(cmd.contains(&"--input-format".to_string()));
+        assert!(cmd.contains(&"stream-json".to_string()));
+    }
 }
