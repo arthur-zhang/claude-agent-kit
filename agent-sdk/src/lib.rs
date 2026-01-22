@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```rust
-//! use claude_agent_sdk_ng::types::{ClaudeAgentOptions, PermissionMode};
+//! use claude_agent_sdk::types::{ClaudeAgentOptions, PermissionMode};
 //!
 //! let options = ClaudeAgentOptions::new()
 //!     .with_model("claude-sonnet-4")
@@ -28,11 +28,11 @@
 //! - [`internal`] - Internal implementation (transport, query, client)
 //! - [`client`] - High-level client API
 
-pub mod types;
-pub mod internal;
 pub mod client;
+pub mod internal;
+pub mod types;
 
 // Re-export all public types at the crate root for convenience
-pub use types::*;
-pub use internal::{InternalClient, Transport};
 pub use client::ClaudeClient;
+pub use internal::InternalClient;
+pub use types::*;

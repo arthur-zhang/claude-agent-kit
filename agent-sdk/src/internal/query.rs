@@ -5,12 +5,12 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::error;
 
+use crate::internal::transport::WriteHalf;
 use crate::types::{
-    CanUseTool, Error, HookCallback, HookContext, HookEvent, HookInput,
-    HookMatcher, PermissionResult, Result,
-    ToolPermissionContext,
+    CanUseTool, Error, HookCallback, HookContext, HookEvent, HookInput, HookMatcher,
+    PermissionResult, Result, ToolPermissionContext,
 };
-use super::Transport;
+use tokio::process::ChildStdin;
 
 /// Query handles bidirectional control protocol on top of Transport.
 ///
@@ -21,7 +21,8 @@ use super::Transport;
 /// - Message streaming
 /// - Initialization handshake
 pub struct Query {
-    transport: Arc<Mutex<Box<dyn Transport>>>,
+    write_half: Arc<Mutex<WriteHalf<ChildStdin>>>,
+    read_rx: Arc<Mutex<mpsc::Receiver<serde_json::Value>>>,
     is_streaming: bool,
 
     // Control protocol state
@@ -44,7 +45,8 @@ pub struct Query {
 impl Query {
     /// Create a new Query instance.
     pub fn new(
-        transport: Box<dyn Transport>,
+        write_half: WriteHalf<ChildStdin>,
+        read_rx: mpsc::Receiver<serde_json::Value>,
         is_streaming: bool,
         can_use_tool: Option<Box<dyn CanUseTool>>,
         _hooks: Option<HashMap<HookEvent, Vec<HookMatcher>>>,
@@ -52,7 +54,8 @@ impl Query {
         let (message_tx, message_rx) = mpsc::channel(100);
 
         Self {
-            transport: Arc::new(Mutex::new(transport)),
+            write_half: Arc::new(Mutex::new(write_half)),
+            read_rx: Arc::new(Mutex::new(read_rx)),
             is_streaming,
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             hook_callbacks: Arc::new(Mutex::new(HashMap::new())),
@@ -88,62 +91,58 @@ impl Query {
 
     /// Start reading messages from transport.
     pub async fn start(&mut self) -> Result<()> {
-        let transport = Arc::clone(&self.transport);
+        let read_rx = Arc::clone(&self.read_rx);
+        let write_half = Arc::clone(&self.write_half);
         let message_tx = self.message_tx.clone();
         let pending_requests = Arc::clone(&self.pending_requests);
         let hook_callbacks = Arc::clone(&self.hook_callbacks);
         let can_use_tool = self.can_use_tool.clone();
 
         tokio::spawn(async move {
-            let mut transport_guard = transport.lock().await;
+            let mut rx = read_rx.lock().await;
 
-            match transport_guard.read_messages().await {
-                Ok(mut rx) => {
-                    drop(transport_guard); // Release lock before processing messages
+            while let Some(message) = rx.recv().await {
+                let msg_type = message.get("type").and_then(|v| v.as_str());
 
-                    while let Some(message) = rx.recv().await {
-                        let msg_type = message.get("type").and_then(|v| v.as_str());
-
-                        match msg_type {
-                            Some("control_response") => {
-                                // Handle control response
-                                if let Some(response) = message.get("response") {
-                                    if let Some(request_id) = response.get("request_id").and_then(|v| v.as_str()) {
-                                        let mut pending = pending_requests.lock().await;
-                                        if let Some(tx) = pending.remove(request_id) {
-                                            let _ = tx.send(response.clone());
-                                        }
-                                    }
-                                }
-                            }
-                            Some("control_request") => {
-                                // Handle incoming control request
-                                let transport_clone = Arc::clone(&transport);
-                                let hook_callbacks_clone = Arc::clone(&hook_callbacks);
-                                let can_use_tool_clone = can_use_tool.clone();
-
-                                tokio::spawn(async move {
-                                    if let Err(e) = Self::handle_control_request(
-                                        message,
-                                        transport_clone,
-                                        hook_callbacks_clone,
-                                        can_use_tool_clone,
-                                    ).await {
-                                        error!("Failed to handle control request: {}", e);
-                                    }
-                                });
-                            }
-                            _ => {
-                                // Regular message - send to stream
-                                if message_tx.send(message).await.is_err() {
-                                    break;
+                match msg_type {
+                    Some("control_response") => {
+                        // Handle control response
+                        if let Some(response) = message.get("response") {
+                            if let Some(request_id) =
+                                response.get("request_id").and_then(|v| v.as_str())
+                            {
+                                let mut pending = pending_requests.lock().await;
+                                if let Some(tx) = pending.remove(request_id) {
+                                    let _ = tx.send(response.clone());
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    error!("Failed to read messages: {}", e);
+                    Some("control_request") => {
+                        // Handle incoming control request
+                        let write_half_clone = Arc::clone(&write_half);
+                        let hook_callbacks_clone = Arc::clone(&hook_callbacks);
+                        let can_use_tool_clone = can_use_tool.clone();
+
+                        tokio::spawn(async move {
+                            if let Err(e) = Self::handle_control_request(
+                                message,
+                                write_half_clone,
+                                hook_callbacks_clone,
+                                can_use_tool_clone,
+                            )
+                            .await
+                            {
+                                error!("Failed to handle control request: {}", e);
+                            }
+                        });
+                    }
+                    _ => {
+                        // Regular message - send to stream
+                        if message_tx.send(message).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -154,34 +153,37 @@ impl Query {
     /// Handle incoming control request from CLI.
     async fn handle_control_request(
         request: serde_json::Value,
-        transport: Arc<Mutex<Box<dyn Transport>>>,
+        write_half: Arc<Mutex<WriteHalf<ChildStdin>>>,
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<()> {
-        let request_obj = request.as_object()
+        let request_obj = request
+            .as_object()
             .ok_or_else(|| Error::ControlProtocol("Invalid control request".to_string()))?;
 
-        let request_id = request_obj.get("request_id")
+        let request_id = request_obj
+            .get("request_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing request_id".to_string()))?
             .to_string();
 
-        let request_data = request_obj.get("request")
+        let request_data = request_obj
+            .get("request")
             .ok_or_else(|| Error::ControlProtocol("Missing request data".to_string()))?;
 
-        let subtype = request_data.get("subtype")
+        let subtype = request_data
+            .get("subtype")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing subtype".to_string()))?;
 
         let response_data = match subtype {
-            "can_use_tool" => {
-                Self::handle_permission_request(request_data, can_use_tool).await?
-            }
-            "hook_callback" => {
-                Self::handle_hook_callback(request_data, hook_callbacks).await?
-            }
+            "can_use_tool" => Self::handle_permission_request(request_data, can_use_tool).await?,
+            "hook_callback" => Self::handle_hook_callback(request_data, hook_callbacks).await?,
             _ => {
-                return Err(Error::ControlProtocol(format!("Unsupported subtype: {}", subtype)));
+                return Err(Error::ControlProtocol(format!(
+                    "Unsupported subtype: {}",
+                    subtype
+                )));
             }
         };
 
@@ -196,8 +198,8 @@ impl Query {
         });
 
         let response_str = serde_json::to_string(&response)? + "\n";
-        let mut transport_guard = transport.lock().await;
-        transport_guard.write(&response_str).await?;
+        let mut write_guard = write_half.lock().await;
+        write_guard.write(&response_str).await?;
 
         Ok(())
     }
@@ -207,15 +209,18 @@ impl Query {
         request_data: &serde_json::Value,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<serde_json::Value> {
-        let tool_name = request_data.get("tool_name")
+        let tool_name = request_data
+            .get("tool_name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing tool_name".to_string()))?;
 
-        let input = request_data.get("input")
+        let input = request_data
+            .get("input")
             .ok_or_else(|| Error::ControlProtocol("Missing input".to_string()))?;
 
-        let can_use_tool = can_use_tool
-            .ok_or_else(|| Error::ControlProtocol("canUseTool callback not provided".to_string()))?;
+        let can_use_tool = can_use_tool.ok_or_else(|| {
+            Error::ControlProtocol("canUseTool callback not provided".to_string())
+        })?;
 
         let context = ToolPermissionContext {
             signal: None,
@@ -249,27 +254,29 @@ impl Query {
         request_data: &serde_json::Value,
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
     ) -> Result<serde_json::Value> {
-        let callback_id = request_data.get("callback_id")
+        let callback_id = request_data
+            .get("callback_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing callback_id".to_string()))?;
 
-        let input = request_data.get("input")
+        let input = request_data
+            .get("input")
             .ok_or_else(|| Error::ControlProtocol("Missing input".to_string()))?;
 
-        let tool_use_id = request_data.get("tool_use_id")
+        let tool_use_id = request_data
+            .get("tool_use_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let callbacks = hook_callbacks.lock().await;
-        let callback = callbacks.get(callback_id)
-            .ok_or_else(|| Error::ControlProtocol(format!("Hook callback not found: {}", callback_id)))?;
+        let callback = callbacks.get(callback_id).ok_or_else(|| {
+            Error::ControlProtocol(format!("Hook callback not found: {}", callback_id))
+        })?;
 
         // Parse hook input
         let hook_input: HookInput = serde_json::from_value(input.clone())?;
 
-        let context = HookContext {
-            signal: None,
-        };
+        let context = HookContext { signal: None };
 
         let output = callback.call(hook_input, tool_use_id, context).await?;
 
@@ -286,7 +293,9 @@ impl Query {
         timeout_secs: f64,
     ) -> Result<serde_json::Value> {
         if !self.is_streaming {
-            return Err(Error::ControlProtocol("Control requests require streaming mode".to_string()));
+            return Err(Error::ControlProtocol(
+                "Control requests require streaming mode".to_string(),
+            ));
         }
 
         // Generate unique request ID
@@ -312,30 +321,36 @@ impl Query {
 
         let request_str = serde_json::to_string(&control_request)? + "\n";
 
-        {
-            let mut transport = self.transport.lock().await;
-            transport.write(&request_str).await?;
-        }
+        let mut write_guard = self.write_half.lock().await;
+        write_guard.write(&request_str).await?;
+        drop(write_guard); // Release lock before waiting for response
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs_f64(timeout_secs),
-            rx
-        ).await
-            .map_err(|_| Error::Timeout(format!("Control request timeout: {:?}", request.get("subtype"))))?
+        let response = tokio::time::timeout(std::time::Duration::from_secs_f64(timeout_secs), rx)
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Control request timeout: {:?}",
+                    request.get("subtype")
+                ))
+            })?
             .map_err(|_| Error::ControlProtocol("Response channel closed".to_string()))?;
 
         // Check for error response
         if let Some(subtype) = response.get("subtype").and_then(|v| v.as_str()) {
             if subtype == "error" {
-                let error_msg = response.get("error")
+                let error_msg = response
+                    .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown error");
                 return Err(Error::ControlProtocol(error_msg.to_string()));
             }
         }
 
-        Ok(response.get("response").cloned().unwrap_or(serde_json::json!({})))
+        Ok(response
+            .get("response")
+            .cloned()
+            .unwrap_or(serde_json::json!({})))
     }
 
     /// Send interrupt control request.
@@ -378,22 +393,19 @@ impl Query {
     }
 
     /// Stream input messages to transport.
-    pub async fn stream_input(&mut self, mut input_rx: mpsc::Receiver<serde_json::Value>) -> Result<()> {
-        let transport = Arc::clone(&self.transport);
-
+    pub async fn stream_input(
+        &mut self,
+        mut input_rx: mpsc::Receiver<serde_json::Value>,
+    ) -> Result<()> {
         while let Some(message) = input_rx.recv().await {
             if self.closed {
                 break;
             }
 
             let message_str = serde_json::to_string(&message)? + "\n";
-            let mut transport_guard = transport.lock().await;
-            transport_guard.write(&message_str).await?;
+            let mut write_guard = self.write_half.lock().await;
+            write_guard.write(&message_str).await?;
         }
-
-        // End input after all messages sent
-        let mut transport_guard = transport.lock().await;
-        transport_guard.end_input().await?;
 
         Ok(())
     }
@@ -405,8 +417,8 @@ impl Query {
 
     /// Write raw data to transport.
     pub async fn write(&mut self, data: &str) -> Result<()> {
-        let mut transport = self.transport.lock().await;
-        transport.write(data).await
+        let mut write_guard = self.write_half.lock().await;
+        write_guard.write(data).await
     }
 
     /// Get initialization result.
@@ -418,15 +430,13 @@ impl Query {
     /// Close the query and transport.
     pub async fn close(&mut self) -> Result<()> {
         self.closed = true;
-        let mut transport = self.transport.lock().await;
-        transport.close().await
+        // WriteHalf will be dropped automatically, closing the write side
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Full integration tests would require a mock transport
     // These are basic structural tests
 

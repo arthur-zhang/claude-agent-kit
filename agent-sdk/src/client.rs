@@ -5,9 +5,11 @@ use futures::Stream;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
+use crate::internal::transport::{
+    ProcessHandle, PromptInput as TransportPromptInput, SubprocessCLITransport,
+};
+use crate::internal::Query;
 use crate::types::{ClaudeAgentOptions, Error, Message, Result};
-use crate::internal::{Query, Transport};
-use crate::internal::transport::{SubprocessCLITransport, PromptInput as TransportPromptInput};
 
 /// Prompt input for client operations.
 pub enum ClientPromptInput {
@@ -43,27 +45,22 @@ pub enum ClientPromptInput {
 /// # Example
 ///
 /// ```rust,no_run
-/// use claude_agent_sdk_ng::{ClaudeClient, ClaudeAgentOptions};
+/// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let options = ClaudeAgentOptions::new();
-///     let mut client = ClaudeClient::new(options, None);
+///     let mut client = ClaudeClient::new(options);
 ///
 ///     // Connect to Claude
 ///     client.connect(None).await?;
 ///
 ///     // Send a query
-///     client.query_string("What is the capital of France?", "default").await?;
+///     client.query_string("What is the capital of France?", None).await?;
 ///
-///     // Receive response
-///     let mut response_stream = client.receive_response().await?;
-///     while let Some(msg) = response_stream.next().await {
-///         match msg {
-///             Ok(message) => println!("Received: {:?}", message),
-///             Err(e) => eprintln!("Error: {}", e),
-///         }
-///     }
+///     // Receive response (use StreamExt trait for .next())
+///     // let mut response_stream = client.receive_response().await?;
+///     // Process messages from the stream...
 ///
 ///     // Disconnect
 ///     client.disconnect().await?;
@@ -72,8 +69,9 @@ pub enum ClientPromptInput {
 /// ```
 pub struct ClaudeClient {
     options: ClaudeAgentOptions,
-    custom_transport: Option<Box<dyn Transport>>,
     query: Option<Query>,
+    stderr_rx: Option<mpsc::Receiver<String>>,
+    process_handle: Option<ProcessHandle>,
 }
 
 impl ClaudeClient {
@@ -81,15 +79,12 @@ impl ClaudeClient {
     ///
     /// # Arguments
     /// * `options` - Configuration options for the client
-    /// * `transport` - Optional custom transport (defaults to SubprocessCLITransport)
-    pub fn new(
-        options: ClaudeAgentOptions,
-        transport: Option<Box<dyn Transport>>,
-    ) -> Self {
+    pub fn new(options: ClaudeAgentOptions) -> Self {
         Self {
             options,
-            custom_transport: transport,
             query: None,
+            stderr_rx: None,
+            process_handle: None,
         }
     }
 
@@ -110,7 +105,8 @@ impl ClaudeClient {
             if matches!(prompt, Some(ClientPromptInput::String(_))) {
                 return Err(Error::InvalidConfig(
                     "can_use_tool callback requires streaming mode. \
-                    Please provide prompt as a Stream instead of a String.".to_string()
+                    Please provide prompt as a Stream instead of a String."
+                        .to_string(),
                 ));
             }
 
@@ -118,7 +114,8 @@ impl ClaudeClient {
             if self.options.permission_prompt_tool_name.is_some() {
                 return Err(Error::InvalidConfig(
                     "can_use_tool callback cannot be used with permission_prompt_tool_name. \
-                    Please use one or the other.".to_string()
+                    Please use one or the other."
+                        .to_string(),
                 ));
             }
 
@@ -140,19 +137,21 @@ impl ClaudeClient {
         let can_use_tool = self.options.can_use_tool.take();
         let hooks = self.options.hooks.take();
 
-        // Create or use provided transport
-        let mut transport: Box<dyn Transport> = if let Some(t) = self.custom_transport.take() {
-            t
-        } else {
-            Box::new(SubprocessCLITransport::new(actual_prompt, self.options.clone())?)
-        };
-
-        // Connect transport
+        // Create and connect transport
+        let mut transport = SubprocessCLITransport::new(actual_prompt, self.options.clone())?;
         transport.connect().await?;
 
-        // Create Query to handle control protocol
+        // Split transport into independent halves
+        let (read_half, write_half, stderr_half, process_handle) = transport.split()?;
+
+        // Start reading messages and stderr
+        let read_rx = read_half.read_messages();
+        let stderr_rx = stderr_half.read_lines();
+
+        // Create Query with write_half and read_rx
         let mut query = Query::new(
-            transport,
+            write_half,
+            read_rx,
             true, // ClaudeClient always uses streaming mode
             can_use_tool,
             hooks,
@@ -163,6 +162,8 @@ impl ClaudeClient {
         query.initialize().await?;
 
         self.query = Some(query);
+        self.stderr_rx = Some(stderr_rx);
+        self.process_handle = Some(process_handle);
 
         Ok(())
     }
@@ -175,9 +176,11 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected or write fails
-    pub async fn query_string(&mut self, prompt: &str, session_id: &str) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+    pub async fn query_string(&mut self, prompt: &str, session_id: Option<String>) -> Result<()> {
+        let session_id = session_id.unwrap_or("default".into());
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         let message = serde_json::json!({
             "type": "user",
@@ -208,8 +211,9 @@ impl ClaudeClient {
         mut messages: mpsc::Receiver<serde_json::Value>,
         session_id: &str,
     ) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         while let Some(mut msg) = messages.recv().await {
             // Ensure session_id is set on each message
@@ -231,8 +235,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn interrupt(&mut self) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.interrupt().await
     }
@@ -245,8 +250,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn set_permission_mode(&mut self, mode: &str) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.set_permission_mode(mode).await
     }
@@ -258,9 +264,9 @@ impl ClaudeClient {
     ///
     /// # Example
     /// ```rust,no_run
-    /// # use claude_agent_sdk_ng::{ClaudeClient, ClaudeAgentOptions};
+    /// # use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut client = ClaudeClient::new(ClaudeAgentOptions::new(), None);
+    /// # let mut client = ClaudeClient::new(ClaudeAgentOptions::new());
     /// # client.connect(None).await?;
     /// // Switch to a different model
     /// client.set_model(Some("claude-sonnet-4-5")).await?;
@@ -271,8 +277,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn set_model(&mut self, model: Option<&str>) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.set_model(model).await
     }
@@ -287,8 +294,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn rewind_files(&mut self, user_message_id: &str) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.rewind_files(user_message_id).await
     }
@@ -306,8 +314,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn get_server_info(&self) -> Result<Option<serde_json::Value>> {
-        let query = self.query.as_ref()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_ref().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         Ok(query.get_initialization_result())
     }
@@ -318,11 +327,15 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected
-    pub async fn receive_messages(&mut self) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+    pub async fn receive_messages(
+        &mut self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
-        let mut message_rx = query.receive_messages()
+        let mut message_rx = query
+            .receive_messages()
             .ok_or_else(|| Error::Unknown("Failed to get message receiver".to_string()))?;
 
         let message_stream = stream! {
@@ -347,7 +360,9 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected
-    pub async fn receive_response(&mut self) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+    pub async fn receive_response(
+        &mut self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
         let mut messages = self.receive_messages().await?;
 
         let response_stream = stream! {
@@ -383,6 +398,94 @@ impl ClaudeClient {
         }
         Ok(())
     }
+
+    /// Get the stderr receiver (can only be called once).
+    ///
+    /// Returns the receiver for stderr lines from the Claude CLI process.
+    /// This allows you to monitor diagnostic logs and debug output from the CLI.
+    ///
+    /// **Important**: This can only be called once - subsequent calls will return None.
+    /// The receiver is moved out of the client, so you must store it if you need it.
+    ///
+    /// # Returns
+    ///
+    /// The stderr receiver, or None if already taken or not connected
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let mut client = ClaudeClient::new(options);
+    ///     client.connect(None).await?;
+    ///
+    ///     // Get stderr receiver and spawn a task to monitor it
+    ///     if let Some(mut stderr_rx) = client.stderr_receiver() {
+    ///         tokio::spawn(async move {
+    ///             while let Some(line) = stderr_rx.recv().await {
+    ///                 eprintln!("Claude CLI: {}", line);
+    ///             }
+    ///         });
+    ///     }
+    ///
+    ///     // Continue using the client...
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn stderr_receiver(&mut self) -> Option<mpsc::Receiver<String>> {
+        self.stderr_rx.take()
+    }
+
+    /// Get the process handle (can only be called once).
+    ///
+    /// Returns the handle for managing the Claude CLI process lifecycle.
+    /// This allows you to monitor the process status, wait for completion,
+    /// or forcefully terminate the process if needed.
+    ///
+    /// **Important**: This can only be called once - subsequent calls will return None.
+    /// The handle is moved out of the client, so you must store it if you need it.
+    ///
+    /// # Returns
+    ///
+    /// The process handle, or None if already taken or not connected
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let options = ClaudeAgentOptions::new();
+    ///     let mut client = ClaudeClient::new(options);
+    ///     client.connect(None).await?;
+    ///
+    ///     // Get process handle for lifecycle management
+    ///     if let Some(mut handle) = client.process_handle() {
+    ///         // Check process ID
+    ///         if let Some(pid) = handle.id() {
+    ///             println!("Claude CLI process ID: {}", pid);
+    ///         }
+    ///
+    ///         // Spawn a task to monitor process status
+    ///         tokio::spawn(async move {
+    ///             match handle.wait().await {
+    ///                 Ok(status) => println!("Process exited with: {:?}", status),
+    ///                 Err(e) => eprintln!("Error waiting for process: {}", e),
+    ///             }
+    ///         });
+    ///     }
+    ///
+    ///     // Continue using the client...
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn process_handle(&mut self) -> Option<ProcessHandle> {
+        self.process_handle.take()
+    }
 }
 
 // Implement Drop to ensure cleanup
@@ -403,14 +506,14 @@ mod tests {
     #[test]
     fn test_client_creation() {
         let options = ClaudeAgentOptions::new();
-        let client = ClaudeClient::new(options, None);
+        let client = ClaudeClient::new(options);
         assert!(client.query.is_none());
     }
 
     #[tokio::test]
     async fn test_connect_without_prompt() {
         let options = ClaudeAgentOptions::new();
-        let mut client = ClaudeClient::new(options, None);
+        let mut client = ClaudeClient::new(options);
 
         // This will fail without a real CLI, but tests the structure
         let result = client.connect(None).await;

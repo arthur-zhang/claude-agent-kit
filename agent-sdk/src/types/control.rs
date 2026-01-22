@@ -194,9 +194,7 @@ mod tests {
         let request = SDKControlRequest {
             type_: "control_request".to_string(),
             request_id: "req-789".to_string(),
-            request: SDKControlRequestType::Initialize {
-                hooks: Some(hooks),
-            },
+            request: SDKControlRequestType::Initialize { hooks: Some(hooks) },
         };
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["subtype"], "initialize");

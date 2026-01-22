@@ -169,6 +169,7 @@ impl ClaudeAgentOptions {
     ///
     /// This creates a shallow clone that copies all configuration values
     /// but does not clone trait objects (can_use_tool, hooks, stderr).
+    #[allow(clippy::should_implement_trait)]
     pub fn clone(&self) -> Self {
         Self {
             tools: self.tools.clone(),
@@ -192,9 +193,9 @@ impl ClaudeAgentOptions {
             env: self.env.clone(),
             extra_args: self.extra_args.clone(),
             max_buffer_size: self.max_buffer_size,
-            stderr: None, // Cannot clone function pointer
+            stderr: None,       // Cannot clone function pointer
             can_use_tool: None, // Cannot clone trait object
-            hooks: None, // Cannot clone hooks
+            hooks: None,        // Cannot clone hooks
             user: self.user.clone(),
             include_partial_messages: self.include_partial_messages,
             fork_session: self.fork_session,
