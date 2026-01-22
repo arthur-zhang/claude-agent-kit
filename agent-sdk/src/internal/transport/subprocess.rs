@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
-use super::Transport;
+use super::{ProcessHandle, ReadHalf, StderrHalf, Transport, WriteHalf};
 use crate::types::{ClaudeAgentOptions, Error, Result};
 
 const _DEFAULT_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
@@ -306,6 +306,58 @@ impl SubprocessCLITransport {
         }
 
         cmd
+    }
+
+    /// Split the transport into independent read/write/stderr halves and process handle.
+    ///
+    /// This consumes the transport and returns four independent components:
+    /// - ReadHalf: for reading stdout
+    /// - WriteHalf: for writing to stdin
+    /// - StderrHalf: for reading stderr
+    /// - ProcessHandle: for managing the process lifecycle
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The process has not been started (call `connect()` first)
+    /// - stdin, stdout, or stderr are not available
+    pub fn split(
+        mut self,
+    ) -> Result<(
+        ReadHalf<ChildStdout>,
+        WriteHalf<ChildStdin>,
+        StderrHalf<ChildStderr>,
+        ProcessHandle,
+    )> {
+        // Ensure process is started
+        let mut child = self
+            .process
+            .take()
+            .ok_or_else(|| Error::Process("Process not started. Call connect() first.".to_string()))?;
+
+        // Take stdin, stdout, stderr
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Process("stdin not available".to_string()))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Process("stdout not available".to_string()))?;
+
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Process("stderr not available".to_string()))?;
+
+        // Create halves
+        let read_half = ReadHalf::new(stdout);
+        let write_half = WriteHalf::new(stdin);
+        let stderr_half = StderrHalf::new(stderr);
+        let process_handle = ProcessHandle::new(child);
+
+        Ok((read_half, write_half, stderr_half, process_handle))
     }
 }
 
