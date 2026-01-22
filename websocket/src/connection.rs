@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::error::{Result, WebSocketError};
@@ -47,9 +47,9 @@ impl ConnectionManager {
         let connections = self.connections.read().await;
 
         if let Some(sender) = connections.get(id) {
-            sender
-                .send(message)
-                .map_err(|e| WebSocketError::InternalError(format!("Failed to send message: {}", e)))?;
+            sender.send(message).map_err(|e| {
+                WebSocketError::InternalError(format!("Failed to send message: {}", e))
+            })?;
             debug!("Message sent to connection: {}", id);
             Ok(())
         } else {
@@ -86,7 +86,10 @@ impl ConnectionManager {
             }
         }
 
-        debug!("Broadcast message to {} connections (excluding {})", count, exclude_id);
+        debug!(
+            "Broadcast message to {} connections (excluding {})",
+            count, exclude_id
+        );
     }
 
     /// 获取当前连接数
@@ -137,7 +140,10 @@ mod tests {
         manager.send_to(&id, msg.clone()).await.unwrap();
 
         let received = rx.recv().await.unwrap();
-        assert!(matches!(received.msg_type, crate::message::ServerMessageType::Notification));
+        assert!(matches!(
+            received.msg_type,
+            crate::message::ServerMessageType::Notification
+        ));
     }
 
     #[tokio::test]

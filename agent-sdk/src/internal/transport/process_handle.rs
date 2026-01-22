@@ -1,7 +1,7 @@
 //! Process handle for managing subprocess lifecycle.
 
-use tokio::process::Child;
 use crate::types::{Error, Result};
+use tokio::process::Child;
 
 /// Handle for managing a subprocess.
 ///

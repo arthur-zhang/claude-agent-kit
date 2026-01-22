@@ -5,12 +5,11 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::error;
 
-use crate::types::{
-    CanUseTool, Error, HookCallback, HookContext, HookEvent, HookInput,
-    HookMatcher, PermissionResult, Result,
-    ToolPermissionContext,
-};
 use crate::internal::transport::WriteHalf;
+use crate::types::{
+    CanUseTool, Error, HookCallback, HookContext, HookEvent, HookInput, HookMatcher,
+    PermissionResult, Result, ToolPermissionContext,
+};
 use tokio::process::ChildStdin;
 
 /// Query handles bidirectional control protocol on top of Transport.
@@ -109,7 +108,9 @@ impl Query {
                     Some("control_response") => {
                         // Handle control response
                         if let Some(response) = message.get("response") {
-                            if let Some(request_id) = response.get("request_id").and_then(|v| v.as_str()) {
+                            if let Some(request_id) =
+                                response.get("request_id").and_then(|v| v.as_str())
+                            {
                                 let mut pending = pending_requests.lock().await;
                                 if let Some(tx) = pending.remove(request_id) {
                                     let _ = tx.send(response.clone());
@@ -129,7 +130,9 @@ impl Query {
                                 write_half_clone,
                                 hook_callbacks_clone,
                                 can_use_tool_clone,
-                            ).await {
+                            )
+                            .await
+                            {
                                 error!("Failed to handle control request: {}", e);
                             }
                         });
@@ -154,30 +157,33 @@ impl Query {
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<()> {
-        let request_obj = request.as_object()
+        let request_obj = request
+            .as_object()
             .ok_or_else(|| Error::ControlProtocol("Invalid control request".to_string()))?;
 
-        let request_id = request_obj.get("request_id")
+        let request_id = request_obj
+            .get("request_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing request_id".to_string()))?
             .to_string();
 
-        let request_data = request_obj.get("request")
+        let request_data = request_obj
+            .get("request")
             .ok_or_else(|| Error::ControlProtocol("Missing request data".to_string()))?;
 
-        let subtype = request_data.get("subtype")
+        let subtype = request_data
+            .get("subtype")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing subtype".to_string()))?;
 
         let response_data = match subtype {
-            "can_use_tool" => {
-                Self::handle_permission_request(request_data, can_use_tool).await?
-            }
-            "hook_callback" => {
-                Self::handle_hook_callback(request_data, hook_callbacks).await?
-            }
+            "can_use_tool" => Self::handle_permission_request(request_data, can_use_tool).await?,
+            "hook_callback" => Self::handle_hook_callback(request_data, hook_callbacks).await?,
             _ => {
-                return Err(Error::ControlProtocol(format!("Unsupported subtype: {}", subtype)));
+                return Err(Error::ControlProtocol(format!(
+                    "Unsupported subtype: {}",
+                    subtype
+                )));
             }
         };
 
@@ -203,15 +209,18 @@ impl Query {
         request_data: &serde_json::Value,
         can_use_tool: Option<Arc<Box<dyn CanUseTool>>>,
     ) -> Result<serde_json::Value> {
-        let tool_name = request_data.get("tool_name")
+        let tool_name = request_data
+            .get("tool_name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing tool_name".to_string()))?;
 
-        let input = request_data.get("input")
+        let input = request_data
+            .get("input")
             .ok_or_else(|| Error::ControlProtocol("Missing input".to_string()))?;
 
-        let can_use_tool = can_use_tool
-            .ok_or_else(|| Error::ControlProtocol("canUseTool callback not provided".to_string()))?;
+        let can_use_tool = can_use_tool.ok_or_else(|| {
+            Error::ControlProtocol("canUseTool callback not provided".to_string())
+        })?;
 
         let context = ToolPermissionContext {
             signal: None,
@@ -245,27 +254,29 @@ impl Query {
         request_data: &serde_json::Value,
         hook_callbacks: Arc<Mutex<HashMap<String, Box<dyn HookCallback>>>>,
     ) -> Result<serde_json::Value> {
-        let callback_id = request_data.get("callback_id")
+        let callback_id = request_data
+            .get("callback_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::ControlProtocol("Missing callback_id".to_string()))?;
 
-        let input = request_data.get("input")
+        let input = request_data
+            .get("input")
             .ok_or_else(|| Error::ControlProtocol("Missing input".to_string()))?;
 
-        let tool_use_id = request_data.get("tool_use_id")
+        let tool_use_id = request_data
+            .get("tool_use_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
         let callbacks = hook_callbacks.lock().await;
-        let callback = callbacks.get(callback_id)
-            .ok_or_else(|| Error::ControlProtocol(format!("Hook callback not found: {}", callback_id)))?;
+        let callback = callbacks.get(callback_id).ok_or_else(|| {
+            Error::ControlProtocol(format!("Hook callback not found: {}", callback_id))
+        })?;
 
         // Parse hook input
         let hook_input: HookInput = serde_json::from_value(input.clone())?;
 
-        let context = HookContext {
-            signal: None,
-        };
+        let context = HookContext { signal: None };
 
         let output = callback.call(hook_input, tool_use_id, context).await?;
 
@@ -282,7 +293,9 @@ impl Query {
         timeout_secs: f64,
     ) -> Result<serde_json::Value> {
         if !self.is_streaming {
-            return Err(Error::ControlProtocol("Control requests require streaming mode".to_string()));
+            return Err(Error::ControlProtocol(
+                "Control requests require streaming mode".to_string(),
+            ));
         }
 
         // Generate unique request ID
@@ -313,24 +326,31 @@ impl Query {
         drop(write_guard); // Release lock before waiting for response
 
         // Wait for response with timeout
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs_f64(timeout_secs),
-            rx
-        ).await
-            .map_err(|_| Error::Timeout(format!("Control request timeout: {:?}", request.get("subtype"))))?
+        let response = tokio::time::timeout(std::time::Duration::from_secs_f64(timeout_secs), rx)
+            .await
+            .map_err(|_| {
+                Error::Timeout(format!(
+                    "Control request timeout: {:?}",
+                    request.get("subtype")
+                ))
+            })?
             .map_err(|_| Error::ControlProtocol("Response channel closed".to_string()))?;
 
         // Check for error response
         if let Some(subtype) = response.get("subtype").and_then(|v| v.as_str()) {
             if subtype == "error" {
-                let error_msg = response.get("error")
+                let error_msg = response
+                    .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown error");
                 return Err(Error::ControlProtocol(error_msg.to_string()));
             }
         }
 
-        Ok(response.get("response").cloned().unwrap_or(serde_json::json!({})))
+        Ok(response
+            .get("response")
+            .cloned()
+            .unwrap_or(serde_json::json!({})))
     }
 
     /// Send interrupt control request.
@@ -373,7 +393,10 @@ impl Query {
     }
 
     /// Stream input messages to transport.
-    pub async fn stream_input(&mut self, mut input_rx: mpsc::Receiver<serde_json::Value>) -> Result<()> {
+    pub async fn stream_input(
+        &mut self,
+        mut input_rx: mpsc::Receiver<serde_json::Value>,
+    ) -> Result<()> {
         while let Some(message) = input_rx.recv().await {
             if self.closed {
                 break;
@@ -414,8 +437,6 @@ impl Query {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: Full integration tests would require a mock transport
     // These are basic structural tests
 

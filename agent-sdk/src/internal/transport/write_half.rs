@@ -1,7 +1,7 @@
 //! Write half for subprocess stdin.
 
-use tokio::io::{AsyncWrite, AsyncWriteExt};
 use crate::types::{Error, Result};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write half for subprocess stdin.
 ///
@@ -23,8 +23,8 @@ impl<W: AsyncWrite + Unpin + Send> WriteHalf<W> {
         self.writer
             .write_all(data.as_bytes())
             .await
-            .map_err(|e| Error::Io(e))?;
-        self.writer.flush().await.map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
+        self.writer.flush().await.map_err(Error::Io)?;
         Ok(())
     }
 }

@@ -20,8 +20,14 @@ async fn test_split_basic_usage() {
     let process_handle = client.process_handle();
 
     // Both should be None since we haven't connected yet
-    assert!(stderr_rx.is_none(), "stderr_receiver should be None before connection");
-    assert!(process_handle.is_none(), "process_handle should be None before connection");
+    assert!(
+        stderr_rx.is_none(),
+        "stderr_receiver should be None before connection"
+    );
+    assert!(
+        process_handle.is_none(),
+        "process_handle should be None before connection"
+    );
 }
 
 #[tokio::test]
@@ -35,14 +41,20 @@ async fn test_split_api_can_only_be_called_once() {
 
     // Second call should also return None (already taken)
     let second_stderr = client.stderr_receiver();
-    assert!(second_stderr.is_none(), "stderr_receiver should return None on second call");
+    assert!(
+        second_stderr.is_none(),
+        "stderr_receiver should return None on second call"
+    );
 
     // Same for process_handle
     let first_handle = client.process_handle();
     assert!(first_handle.is_none());
 
     let second_handle = client.process_handle();
-    assert!(second_handle.is_none(), "process_handle should return None on second call");
+    assert!(
+        second_handle.is_none(),
+        "process_handle should return None on second call"
+    );
 }
 
 #[test]

@@ -35,7 +35,8 @@ impl ClientAction {
     pub fn from_message(msg: &ClientMessage) -> Result<Self, String> {
         match msg.action.as_str() {
             "echo" => {
-                let message = msg.payload
+                let message = msg
+                    .payload
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -43,7 +44,8 @@ impl ClientAction {
                 Ok(ClientAction::Echo { message })
             }
             "broadcast" => {
-                let message = msg.payload
+                let message = msg
+                    .payload
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
@@ -142,10 +144,7 @@ mod tests {
 
     #[test]
     fn test_server_message_serialization() {
-        let msg = ServerMessage::response(
-            "123".to_string(),
-            serde_json::json!({"result": "ok"}),
-        );
+        let msg = ServerMessage::response("123".to_string(), serde_json::json!({"result": "ok"}));
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"response\""));

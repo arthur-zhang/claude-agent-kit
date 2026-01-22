@@ -81,7 +81,10 @@ pub struct PreToolUseHookSpecificOutput {
     pub hook_event_name: String, // "PreToolUse"
     #[serde(rename = "permissionDecision", skip_serializing_if = "Option::is_none")]
     pub permission_decision: Option<PermissionDecision>,
-    #[serde(rename = "permissionDecisionReason", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "permissionDecisionReason",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub permission_decision_reason: Option<String>,
     #[serde(rename = "updatedInput", skip_serializing_if = "Option::is_none")]
     pub updated_input: Option<serde_json::Value>,

@@ -48,7 +48,7 @@ pub struct SandboxIgnoreViolations {
 /// # Example
 ///
 /// ```rust
-/// use claude_agent_sdk_ng::types::sandbox::{SandboxSettings, SandboxNetworkConfig};
+/// use claude_agent_sdk::types::sandbox::{SandboxSettings, SandboxNetworkConfig};
 ///
 /// let sandbox_settings = SandboxSettings {
 ///     enabled: Some(true),

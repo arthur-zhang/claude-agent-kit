@@ -23,7 +23,9 @@ impl SessionManager {
 
     /// Get an existing client for the given session ID.
     pub fn get(&self, session_id: &str) -> Option<Arc<Mutex<ClaudeClient>>> {
-        self.sessions.get(session_id).map(|entry| entry.value().clone())
+        self.sessions
+            .get(session_id)
+            .map(|entry| entry.value().clone())
     }
 
     /// Register a client for a session ID.

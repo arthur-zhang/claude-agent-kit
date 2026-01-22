@@ -1,13 +1,10 @@
 use crate::agent::{AgentSession, SessionManager};
 use crate::connection::ConnectionManager;
 use axum::{
-    extract::{
-        ws::WebSocket,
-        Query, State, WebSocketUpgrade,
-    },
+    Router,
+    extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
     response::Response,
     routing::get,
-    Router,
 };
 use claude_agent_sdk::{ClaudeAgentOptions, ClaudeClient};
 use serde::Deserialize;
@@ -46,7 +43,9 @@ async fn ws_handler(
     Query(query): Query<WsQuery>,
     State(state): State<AppState>,
 ) -> Response {
-    let session_id = query.session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let session_id = query
+        .session_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     ws.on_upgrade(move |socket| handle_socket(socket, state, session_id))
 }
 
@@ -62,7 +61,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, session_id: String) {
 
         // Create new client
         let options = ClaudeAgentOptions::new();
-        let mut new_client = ClaudeClient::new(options, None);
+        let mut new_client = ClaudeClient::new(options);
 
         // Connect to CLI process
         if let Err(e) = new_client.connect(None).await {
@@ -76,7 +75,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, session_id: String) {
         let client = Arc::new(Mutex::new(new_client));
 
         // Register to SessionManager
-        state.session_manager.register(session_id.clone(), Arc::clone(&client));
+        state
+            .session_manager
+            .register(session_id.clone(), Arc::clone(&client));
 
         client
     };
@@ -84,7 +85,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, session_id: String) {
     // Create and run session
     let session = AgentSession::new();
 
-    if let Err(e) = session.run(socket, client.clone(), session_id.clone()).await {
+    if let Err(e) = session
+        .run(socket, client.clone(), session_id.clone())
+        .await
+    {
         error!("Session {} error: {}", session_id, e);
         // On error, remove from SessionManager and disconnect
         if let Err(e) = state.session_manager.remove(&session_id).await {

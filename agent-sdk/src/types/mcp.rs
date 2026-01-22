@@ -70,9 +70,10 @@ mod tests {
     fn test_mcp_sse_config_serialization() {
         let config = McpServerConfig::Sse {
             url: "https://example.com/sse".to_string(),
-            headers: Some(HashMap::from([
-                ("Authorization".to_string(), "Bearer token".to_string()),
-            ])),
+            headers: Some(HashMap::from([(
+                "Authorization".to_string(),
+                "Bearer token".to_string(),
+            )])),
         };
         let json = serde_json::to_value(&config).unwrap();
         assert_eq!(json["type"], "sse");

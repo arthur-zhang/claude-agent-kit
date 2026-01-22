@@ -5,9 +5,11 @@ use futures::Stream;
 use std::pin::Pin;
 use tokio::sync::mpsc;
 
-use crate::types::{ClaudeAgentOptions, Error, Message, Result};
+use crate::internal::transport::{
+    ProcessHandle, PromptInput as TransportPromptInput, SubprocessCLITransport,
+};
 use crate::internal::Query;
-use crate::internal::transport::{ProcessHandle, SubprocessCLITransport, PromptInput as TransportPromptInput};
+use crate::types::{ClaudeAgentOptions, Error, Message, Result};
 
 /// Prompt input for client operations.
 pub enum ClientPromptInput {
@@ -43,7 +45,7 @@ pub enum ClientPromptInput {
 /// # Example
 ///
 /// ```rust,no_run
-/// use claude_agent_sdk_ng::{ClaudeClient, ClaudeAgentOptions};
+/// use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,16 +56,11 @@ pub enum ClientPromptInput {
 ///     client.connect(None).await?;
 ///
 ///     // Send a query
-///     client.query_string("What is the capital of France?", "default").await?;
+///     client.query_string("What is the capital of France?", None).await?;
 ///
-///     // Receive response
-///     let mut response_stream = client.receive_response().await?;
-///     while let Some(msg) = response_stream.next().await {
-///         match msg {
-///             Ok(message) => println!("Received: {:?}", message),
-///             Err(e) => eprintln!("Error: {}", e),
-///         }
-///     }
+///     // Receive response (use StreamExt trait for .next())
+///     // let mut response_stream = client.receive_response().await?;
+///     // Process messages from the stream...
 ///
 ///     // Disconnect
 ///     client.disconnect().await?;
@@ -108,7 +105,8 @@ impl ClaudeClient {
             if matches!(prompt, Some(ClientPromptInput::String(_))) {
                 return Err(Error::InvalidConfig(
                     "can_use_tool callback requires streaming mode. \
-                    Please provide prompt as a Stream instead of a String.".to_string()
+                    Please provide prompt as a Stream instead of a String."
+                        .to_string(),
                 ));
             }
 
@@ -116,7 +114,8 @@ impl ClaudeClient {
             if self.options.permission_prompt_tool_name.is_some() {
                 return Err(Error::InvalidConfig(
                     "can_use_tool callback cannot be used with permission_prompt_tool_name. \
-                    Please use one or the other.".to_string()
+                    Please use one or the other."
+                        .to_string(),
                 ));
             }
 
@@ -179,8 +178,9 @@ impl ClaudeClient {
     /// Returns an error if not connected or write fails
     pub async fn query_string(&mut self, prompt: &str, session_id: Option<String>) -> Result<()> {
         let session_id = session_id.unwrap_or("default".into());
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         let message = serde_json::json!({
             "type": "user",
@@ -211,8 +211,9 @@ impl ClaudeClient {
         mut messages: mpsc::Receiver<serde_json::Value>,
         session_id: &str,
     ) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         while let Some(mut msg) = messages.recv().await {
             // Ensure session_id is set on each message
@@ -234,8 +235,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn interrupt(&mut self) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.interrupt().await
     }
@@ -248,8 +250,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn set_permission_mode(&mut self, mode: &str) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.set_permission_mode(mode).await
     }
@@ -261,9 +264,9 @@ impl ClaudeClient {
     ///
     /// # Example
     /// ```rust,no_run
-    /// # use claude_agent_sdk_ng::{ClaudeClient, ClaudeAgentOptions};
+    /// # use claude_agent_sdk::{ClaudeClient, ClaudeAgentOptions};
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut client = ClaudeClient::new(ClaudeAgentOptions::new(), None);
+    /// # let mut client = ClaudeClient::new(ClaudeAgentOptions::new());
     /// # client.connect(None).await?;
     /// // Switch to a different model
     /// client.set_model(Some("claude-sonnet-4-5")).await?;
@@ -274,8 +277,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn set_model(&mut self, model: Option<&str>) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.set_model(model).await
     }
@@ -290,8 +294,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn rewind_files(&mut self, user_message_id: &str) -> Result<()> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         query.rewind_files(user_message_id).await
     }
@@ -309,8 +314,9 @@ impl ClaudeClient {
     /// # Errors
     /// Returns an error if not connected
     pub async fn get_server_info(&self) -> Result<Option<serde_json::Value>> {
-        let query = self.query.as_ref()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+        let query = self.query.as_ref().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
         Ok(query.get_initialization_result())
     }
@@ -321,11 +327,15 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected
-    pub async fn receive_messages(&mut self) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
-        let query = self.query.as_mut()
-            .ok_or_else(|| Error::CLIConnection("Not connected. Call connect() first.".to_string()))?;
+    pub async fn receive_messages(
+        &mut self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+        let query = self.query.as_mut().ok_or_else(|| {
+            Error::CLIConnection("Not connected. Call connect() first.".to_string())
+        })?;
 
-        let mut message_rx = query.receive_messages()
+        let mut message_rx = query
+            .receive_messages()
             .ok_or_else(|| Error::Unknown("Failed to get message receiver".to_string()))?;
 
         let message_stream = stream! {
@@ -350,7 +360,9 @@ impl ClaudeClient {
     ///
     /// # Errors
     /// Returns an error if not connected
-    pub async fn receive_response(&mut self) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+    pub async fn receive_response(
+        &mut self,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
         let mut messages = self.receive_messages().await?;
 
         let response_stream = stream! {

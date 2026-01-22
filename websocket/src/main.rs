@@ -15,8 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = websocket::server::create_router().await?;
 
     // Start server
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
-        .await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
 
     tracing::info!("WebSocket server listening on: {}", listener.local_addr()?);
 

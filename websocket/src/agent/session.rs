@@ -1,20 +1,26 @@
 //! Agent session for managing WebSocket-Agent communication.
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use claude_agent_sdk::Message::System;
 use claude_agent_sdk::{ClaudeClient, Error};
+use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
-use dashmap::DashMap;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
-use claude_agent_sdk::Message::System;
 
 /// Manages a single WebSocket connection's agent session.
 pub struct AgentSession {
     session_id: Uuid,
+}
+
+impl Default for AgentSession {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AgentSession {
@@ -23,9 +29,7 @@ impl AgentSession {
         let session_id = Uuid::new_v4();
         info!("Created agent session {}", session_id);
 
-        Self {
-            session_id,
-        }
+        Self { session_id }
     }
 
     /// Run the session, forwarding messages between WebSocket and Agent.
@@ -35,12 +39,15 @@ impl AgentSession {
         client: Arc<Mutex<ClaudeClient>>,
         session_id: String,
     ) -> Result<(), Error> {
-        info!("Starting agent session {} with session_id {}", self.session_id, session_id);
+        info!(
+            "Starting agent session {} with session_id {}",
+            self.session_id, session_id
+        );
 
         // Split websocket
         let (mut ws_sender, mut ws_receiver) = websocket.split();
 
-        let session_id_map  = Arc::new(DashMap::new());
+        let session_id_map = Arc::new(DashMap::new());
         // Get two clones of the client for separate tasks
         let client_for_receive = Arc::clone(&client);
         let client_for_send = Arc::clone(&client);
@@ -64,12 +71,18 @@ impl AgentSession {
                 };
 
                 while let Some(msg_result) = agent_stream.next().await {
-                    if let Ok(System(ref system_message)) = msg_result && system_message.subtype == "init"  {
+                    if let Ok(System(ref system_message)) = msg_result
+                        && system_message.subtype == "init"
+                    {
                         // todo
-                        let cc_session_id = system_message.data.get("session_id").unwrap().as_str().unwrap();
+                        let cc_session_id = system_message
+                            .data
+                            .get("session_id")
+                            .unwrap()
+                            .as_str()
+                            .unwrap();
                         session_id_map.insert(session_id.clone(), cc_session_id.to_string());
                     }
-
 
                     if agent_msg_tx.send(msg_result).is_err() {
                         break;
@@ -77,8 +90,6 @@ impl AgentSession {
                 }
             }
         });
-
-
 
         // Main loop: handle WebSocket and agent messages
         loop {
@@ -240,7 +251,10 @@ mod tests {
         let parsed: Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(parsed.get("type").and_then(|v| v.as_str()), Some("error"));
-        assert_eq!(parsed.get("error").and_then(|v| v.as_str()), Some("Test error"));
+        assert_eq!(
+            parsed.get("error").and_then(|v| v.as_str()),
+            Some("Test error")
+        );
     }
 
     #[tokio::test]
@@ -255,12 +269,14 @@ mod tests {
 
         let json: Value = serde_json::from_str(test_message).unwrap();
 
-        let prompt = json.get("message")
+        let prompt = json
+            .get("message")
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
             .unwrap_or("");
 
-        let session_id = json.get("session_id")
+        let session_id = json
+            .get("session_id")
             .and_then(|s| s.as_str())
             .unwrap_or("default");
 
@@ -275,12 +291,14 @@ mod tests {
 
         let json: Value = serde_json::from_str(test_message).unwrap();
 
-        let prompt = json.get("message")
+        let prompt = json
+            .get("message")
             .and_then(|m| m.get("content"))
             .and_then(|c| c.as_str())
             .unwrap_or("");
 
-        let session_id = json.get("session_id")
+        let session_id = json
+            .get("session_id")
             .and_then(|s| s.as_str())
             .unwrap_or("default");
 

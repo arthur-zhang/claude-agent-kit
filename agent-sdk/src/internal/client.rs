@@ -4,9 +4,9 @@ use async_stream::stream;
 use futures::Stream;
 use tokio::sync::mpsc;
 
-use crate::types::{ClaudeAgentOptions, Message, Result};
-use super::{message_parser::parse_message, Query};
 use super::transport::SubprocessCLITransport;
+use super::{message_parser::parse_message, Query};
+use crate::types::{ClaudeAgentOptions, Message, Result};
 
 /// Prompt input type.
 pub enum PromptInput {
@@ -50,7 +50,8 @@ impl InternalClient {
             if !is_streaming {
                 return Err(crate::types::Error::InvalidConfig(
                     "can_use_tool callback requires streaming mode. \
-                    Please provide prompt as a Stream instead of a String.".to_string()
+                    Please provide prompt as a Stream instead of a String."
+                        .to_string(),
                 ));
             }
 
@@ -58,7 +59,8 @@ impl InternalClient {
             if configured_options.permission_prompt_tool_name.is_some() {
                 return Err(crate::types::Error::InvalidConfig(
                     "can_use_tool callback cannot be used with permission_prompt_tool_name. \
-                    Please use one or the other.".to_string()
+                    Please use one or the other."
+                        .to_string(),
                 ));
             }
 
@@ -72,33 +74,25 @@ impl InternalClient {
 
         // Create subprocess transport (custom transport not supported in new API)
         let prompt_input = match prompt {
-            PromptInput::String(s) => {
-                super::transport::PromptInput::String(s)
-            }
-            PromptInput::Stream(rx) => {
-                super::transport::PromptInput::Stream(rx)
-            }
+            PromptInput::String(s) => super::transport::PromptInput::String(s),
+            PromptInput::Stream(rx) => super::transport::PromptInput::Stream(rx),
         };
 
-        let mut subprocess_transport = SubprocessCLITransport::new(prompt_input, configured_options)?;
+        let mut subprocess_transport =
+            SubprocessCLITransport::new(prompt_input, configured_options)?;
 
         // Connect transport
         subprocess_transport.connect().await?;
 
         // Split transport into independent halves
-        let (read_half, write_half, _stderr_half, _process_handle) = subprocess_transport.split()?;
+        let (read_half, write_half, _stderr_half, _process_handle) =
+            subprocess_transport.split()?;
 
         // Start reading messages
         let read_rx = read_half.read_messages();
 
         // Create Query with write_half and read_rx
-        let mut query = Query::new(
-            write_half,
-            read_rx,
-            is_streaming,
-            can_use_tool,
-            hooks,
-        );
+        let mut query = Query::new(write_half, read_rx, is_streaming, can_use_tool, hooks);
 
         // Start reading messages
         query.start().await?;
@@ -109,8 +103,9 @@ impl InternalClient {
         }
 
         // Get message receiver
-        let mut message_rx = query.receive_messages()
-            .ok_or_else(|| crate::types::Error::Unknown("Failed to get message receiver".to_string()))?;
+        let mut message_rx = query.receive_messages().ok_or_else(|| {
+            crate::types::Error::Unknown("Failed to get message receiver".to_string())
+        })?;
 
         // Create stream of parsed messages
         let message_stream = stream! {
@@ -148,8 +143,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_validation_can_use_tool_with_string() {
-        let client = InternalClient::new();
-        let mut options = ClaudeAgentOptions::new();
+        let _client = InternalClient::new();
+        let _options = ClaudeAgentOptions::new();
 
         // This should fail because can_use_tool requires streaming mode
         // Note: We can't actually test this without a mock CanUseTool implementation

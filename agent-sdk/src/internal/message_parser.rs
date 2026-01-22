@@ -66,9 +66,7 @@ fn parse_user_message(data: serde_json::Value) -> Result<Message> {
         let blocks = parse_content_blocks(content_array)?;
         MessageContent::Blocks(blocks)
     } else {
-        return Err(Error::MessageParse(
-            "Invalid content format".to_string(),
-        ));
+        return Err(Error::MessageParse("Invalid content format".to_string()));
     };
 
     Ok(Message::User(UserMessage {
@@ -158,7 +156,8 @@ fn parse_result_message(data: serde_json::Value) -> Result<Message> {
     let num_turns = obj
         .get("num_turns")
         .and_then(|v| v.as_i64())
-        .ok_or_else(|| Error::MessageParse("Missing 'num_turns' field".to_string()))? as i32;
+        .ok_or_else(|| Error::MessageParse("Missing 'num_turns' field".to_string()))?
+        as i32;
 
     let session_id = obj
         .get("session_id")
@@ -257,7 +256,10 @@ fn parse_content_blocks(blocks: &[serde_json::Value]) -> Result<Vec<ContentBlock
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| Error::MessageParse("Missing 'signature' field".to_string()))?
                     .to_string();
-                ContentBlock::Thinking { thinking, signature }
+                ContentBlock::Thinking {
+                    thinking,
+                    signature,
+                }
             }
             "tool_use" => {
                 let id = block_obj
@@ -282,9 +284,9 @@ fn parse_content_blocks(blocks: &[serde_json::Value]) -> Result<Vec<ContentBlock
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| Error::MessageParse("Missing 'tool_use_id' field".to_string()))?
                     .to_string();
-                let content = block_obj.get("content").and_then(|v| {
-                    serde_json::from_value(v.clone()).ok()
-                });
+                let content = block_obj
+                    .get("content")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
                 let is_error = block_obj.get("is_error").and_then(|v| v.as_bool());
                 ContentBlock::ToolResult {
                     tool_use_id,
@@ -321,12 +323,10 @@ mod tests {
 
         let message = parse_message(json).unwrap();
         match message {
-            Message::User(user_msg) => {
-                match user_msg.content {
-                    MessageContent::String(s) => assert_eq!(s, "Hello"),
-                    _ => panic!("Expected string content"),
-                }
-            }
+            Message::User(user_msg) => match user_msg.content {
+                MessageContent::String(s) => assert_eq!(s, "Hello"),
+                _ => panic!("Expected string content"),
+            },
             _ => panic!("Expected user message"),
         }
     }

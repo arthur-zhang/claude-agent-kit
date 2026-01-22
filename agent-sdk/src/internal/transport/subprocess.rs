@@ -12,6 +12,14 @@ use crate::types::{ClaudeAgentOptions, Error, Result};
 const _DEFAULT_MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB
 const _MINIMUM_CLAUDE_CODE_VERSION: &str = "2.0.0";
 
+/// Type alias for the split subprocess components
+type SplitSubprocess = (
+    ReadHalf<ChildStdout>,
+    WriteHalf<ChildStdin>,
+    StderrHalf<ChildStderr>,
+    ProcessHandle,
+);
+
 /// Subprocess transport using Claude Code CLI.
 pub struct SubprocessCLITransport {
     prompt: PromptInput,
@@ -314,19 +322,11 @@ impl SubprocessCLITransport {
     /// Returns an error if:
     /// - The process has not been started (call `connect()` first)
     /// - stdin, stdout, or stderr are not available
-    pub fn split(
-        mut self,
-    ) -> Result<(
-        ReadHalf<ChildStdout>,
-        WriteHalf<ChildStdin>,
-        StderrHalf<ChildStderr>,
-        ProcessHandle,
-    )> {
+    pub fn split(mut self) -> Result<SplitSubprocess> {
         // Ensure process is started
-        let mut child = self
-            .process
-            .take()
-            .ok_or_else(|| Error::Process("Process not started. Call connect() first.".to_string()))?;
+        let mut child = self.process.take().ok_or_else(|| {
+            Error::Process("Process not started. Call connect() first.".to_string())
+        })?;
 
         // Take stdin, stdout, stderr
         let stdin = child
