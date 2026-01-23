@@ -1,6 +1,6 @@
 //! Session management.
 
-pub mod state;
 pub mod handler;
+pub mod state;
 
-pub use state::{SessionState, AgentState, PendingPermission};
+pub use state::{AgentState, PendingPermission, SessionState};

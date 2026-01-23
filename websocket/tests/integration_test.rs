@@ -149,7 +149,9 @@ async fn test_result_message_serialization() {
 
     let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
     match parsed {
-        ServerMessage::Result { subtype, num_turns, .. } => {
+        ServerMessage::Result {
+            subtype, num_turns, ..
+        } => {
             assert_eq!(subtype, ResultSubtype::Success);
             assert_eq!(num_turns, 3);
         }

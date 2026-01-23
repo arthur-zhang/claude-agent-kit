@@ -1,9 +1,9 @@
 //! Session state management.
 
 use crate::protocol::types::SessionConfig;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{Mutex, oneshot};
 
 /// Session state.
 pub struct SessionState {

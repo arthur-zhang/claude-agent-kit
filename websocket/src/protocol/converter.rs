@@ -3,7 +3,7 @@
 //! Converts between agent-sdk message types and WebSocket protocol message types.
 
 use crate::protocol::types::*;
-use claude_agent_sdk::{Message, ContentBlock};
+use claude_agent_sdk::{ContentBlock, Message};
 use uuid::Uuid;
 
 /// Convert SDK message to protocol message(s).
@@ -30,9 +30,7 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
                         result.push(ServerMessage::AssistantMessageDelta {
                             id: msg_id.clone(),
                             session_id: session_id.to_string(),
-                            delta: Delta::Text {
-                                text: text.clone(),
-                            },
+                            delta: Delta::Text { text: text.clone() },
                         });
                     }
                     ContentBlock::ToolUse { id, name, input } => {
@@ -96,7 +94,11 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
         }
         Message::System(system) => {
             // System messages like init are handled internally
-            tracing::debug!("System message: subtype={}, data={:?}", system.subtype, system.data);
+            tracing::debug!(
+                "System message: subtype={}, data={:?}",
+                system.subtype,
+                system.data
+            );
             vec![]
         }
         other => {
@@ -109,17 +111,17 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
 /// Convert protocol client message to SDK input.
 pub fn protocol_to_sdk_input(client_msg: &ClientMessage) -> Option<SdkInput> {
     match client_msg {
-        ClientMessage::UserMessage { content, parent_tool_use_id, .. } => {
-            Some(SdkInput::Query {
-                content: content.clone(),
-                parent_tool_use_id: parent_tool_use_id.clone(),
-            })
-        }
-        ClientMessage::PermissionResponse { decision, .. } => {
-            Some(SdkInput::PermissionDecision {
-                allow: matches!(decision, Decision::Allow | Decision::AllowAlways),
-            })
-        }
+        ClientMessage::UserMessage {
+            content,
+            parent_tool_use_id,
+            ..
+        } => Some(SdkInput::Query {
+            content: content.clone(),
+            parent_tool_use_id: parent_tool_use_id.clone(),
+        }),
+        ClientMessage::PermissionResponse { decision, .. } => Some(SdkInput::PermissionDecision {
+            allow: matches!(decision, Decision::Allow | Decision::AllowAlways),
+        }),
         _ => None,
     }
 }
@@ -145,11 +147,9 @@ mod converter_tests {
     fn test_sdk_assistant_message_to_protocol() {
         // This will fail initially - we'll implement after
         let sdk_msg = Message::Assistant(claude_agent_sdk::AssistantMessage {
-            content: vec![
-                ContentBlock::Text {
-                    text: "Hello, world!".to_string(),
-                },
-            ],
+            content: vec![ContentBlock::Text {
+                text: "Hello, world!".to_string(),
+            }],
             model: "claude-sonnet-4".to_string(),
             parent_tool_use_id: None,
             error: None,
@@ -159,20 +159,24 @@ mod converter_tests {
 
         // Should produce: start, delta (text), complete
         assert_eq!(protocol_msgs.len(), 3);
-        assert!(matches!(protocol_msgs[0], ServerMessage::AssistantMessageStart { .. }));
-        assert!(matches!(protocol_msgs[2], ServerMessage::AssistantMessageComplete { .. }));
+        assert!(matches!(
+            protocol_msgs[0],
+            ServerMessage::AssistantMessageStart { .. }
+        ));
+        assert!(matches!(
+            protocol_msgs[2],
+            ServerMessage::AssistantMessageComplete { .. }
+        ));
     }
 
     #[test]
     fn test_sdk_tool_use_to_protocol() {
         let sdk_msg = Message::Assistant(claude_agent_sdk::AssistantMessage {
-            content: vec![
-                ContentBlock::ToolUse {
-                    id: "tool-1".to_string(),
-                    name: "Bash".to_string(),
-                    input: json!({"command": "ls"}),
-                },
-            ],
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "Bash".to_string(),
+                input: json!({"command": "ls"}),
+            }],
             model: "claude-sonnet-4".to_string(),
             parent_tool_use_id: None,
             error: None,

@@ -2,9 +2,9 @@
 //!
 //! Routes messages between WebSocket and agent SDK.
 
-use crate::protocol::types::*;
 use crate::protocol::converter;
-use crate::session::state::{SessionState, AgentState};
+use crate::protocol::types::*;
+use crate::session::state::{AgentState, SessionState};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use claude_agent_sdk::ClaudeClient;
 use futures::{SinkExt, StreamExt};
@@ -99,7 +99,10 @@ pub async fn handle_session_with_agent(
         client_guard.receive_messages().await?
     }; // Lock released here
 
-    info!("Starting session handler with agent SDK for session {}", session_id);
+    info!(
+        "Starting session handler with agent SDK for session {}",
+        session_id
+    );
 
     loop {
         tokio::select! {
@@ -175,7 +178,10 @@ pub async fn handle_session_with_agent(
         }
     }
 
-    info!("Session handler with agent SDK ending for session {}", session_id);
+    info!(
+        "Session handler with agent SDK ending for session {}",
+        session_id
+    );
     Ok(())
 }
 
@@ -187,11 +193,25 @@ async fn handle_client_message(
     config: &HandlerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match msg {
-        ClientMessage::SessionStart { session_id: client_session_id, config: session_config, .. } => {
+        ClientMessage::SessionStart {
+            session_id: client_session_id,
+            config: _session_config,
+            ..
+        } => {
             // Validate session ID matches
             if client_session_id != state.session_id {
-                warn!("Session ID mismatch: expected {}, got {}", state.session_id, client_session_id);
-                send_error(ws_sender, &state.session_id, None, "Session ID mismatch", config).await;
+                warn!(
+                    "Session ID mismatch: expected {}, got {}",
+                    state.session_id, client_session_id
+                );
+                send_error(
+                    ws_sender,
+                    &state.session_id,
+                    None,
+                    "Session ID mismatch",
+                    config,
+                )
+                .await;
                 return Err("Session ID mismatch".into());
             }
             info!("Session start: {}", client_session_id);
@@ -201,8 +221,15 @@ async fn handle_client_message(
             // TODO: Forward to agent SDK
             state.set_status(AgentState::Thinking).await;
         }
-        ClientMessage::PermissionResponse { request_id, decision, .. } => {
-            debug!("Permission response for request {}: {:?}", request_id, decision);
+        ClientMessage::PermissionResponse {
+            request_id,
+            decision,
+            ..
+        } => {
+            debug!(
+                "Permission response for request {}: {:?}",
+                request_id, decision
+            );
             // TODO: Handle permission response via pending_permission
         }
         ClientMessage::SessionEnd { .. } => {
@@ -224,17 +251,34 @@ async fn handle_client_message_with_agent(
     config: &HandlerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match msg {
-        ClientMessage::SessionStart { session_id: client_session_id, .. } => {
+        ClientMessage::SessionStart {
+            session_id: client_session_id,
+            ..
+        } => {
             // Validate session ID matches
             if client_session_id != state.session_id {
-                warn!("Session ID mismatch: expected {}, got {}", state.session_id, client_session_id);
-                send_error(ws_sender, &state.session_id, None, "Session ID mismatch", config).await;
+                warn!(
+                    "Session ID mismatch: expected {}, got {}",
+                    state.session_id, client_session_id
+                );
+                send_error(
+                    ws_sender,
+                    &state.session_id,
+                    None,
+                    "Session ID mismatch",
+                    config,
+                )
+                .await;
                 return Err("Session ID mismatch".into());
             }
             info!("Session start: {}", client_session_id);
             send_session_info(ws_sender, &state.session_id, SessionStatus::Active, config).await?;
         }
-        ClientMessage::UserMessage { content, parent_tool_use_id, .. } => {
+        ClientMessage::UserMessage {
+            content,
+            parent_tool_use_id,
+            ..
+        } => {
             info!("Forwarding user message to agent");
             state.set_status(AgentState::Thinking).await;
 
@@ -251,8 +295,15 @@ async fn handle_client_message_with_agent(
                 client_guard.query_string(&content, None).await?;
             }
         }
-        ClientMessage::PermissionResponse { request_id, decision, .. } => {
-            debug!("Permission response for request {}: {:?}", request_id, decision);
+        ClientMessage::PermissionResponse {
+            request_id,
+            decision,
+            ..
+        } => {
+            debug!(
+                "Permission response for request {}: {:?}",
+                request_id, decision
+            );
 
             // Get pending permission and send decision
             let mut pending = state.pending_permission.lock().await;
@@ -267,7 +318,10 @@ async fn handle_client_message_with_agent(
                         state.set_status(AgentState::Idle).await;
                     }
                 } else {
-                    warn!("Permission request ID mismatch: expected {}, got {}", perm.request_id, request_id);
+                    warn!(
+                        "Permission request ID mismatch: expected {}, got {}",
+                        perm.request_id, request_id
+                    );
                 }
             } else {
                 warn!("No pending permission request for ID {}", request_id);
@@ -303,7 +357,8 @@ async fn send_error(
             let send_result = tokio::time::timeout(
                 std::time::Duration::from_secs(config.send_timeout_secs),
                 ws_sender.send(WsMessage::Text(json)),
-            ).await;
+            )
+            .await;
 
             if let Err(e) = send_result {
                 error!("Failed to send error message: {}", e);
@@ -332,7 +387,8 @@ async fn send_session_info(
     tokio::time::timeout(
         std::time::Duration::from_secs(config.send_timeout_secs),
         ws_sender.send(WsMessage::Text(json)),
-    ).await??;
+    )
+    .await??;
 
     Ok(())
 }

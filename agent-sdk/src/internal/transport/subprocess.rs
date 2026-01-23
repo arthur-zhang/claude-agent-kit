@@ -38,8 +38,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::info;
 
 use super::{ProcessHandle, ReadHalf, StderrHalf, WriteHalf};
 use crate::types::{ClaudeAgentOptions, Error, Result};

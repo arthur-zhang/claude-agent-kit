@@ -1,12 +1,12 @@
 use crate::connection::ConnectionManager;
-use crate::session::handler::{handle_session_with_agent, HandlerConfig};
-use crate::protocol::types::{SessionConfig, PermissionMode};
+use crate::protocol::types::{PermissionMode, SessionConfig};
+use crate::session::handler::{HandlerConfig, handle_session_with_agent};
 use axum::{
     Router,
     extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
-    response::{Response, IntoResponse},
-    routing::get,
     http::{StatusCode, header},
+    response::{IntoResponse, Response},
+    routing::get,
 };
 use claude_agent_sdk::{ClaudeAgentOptions, ClaudeClient};
 use rust_embed::RustEmbed;
@@ -106,13 +106,9 @@ async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) 
 
     // Use new handler
     let handler_config = HandlerConfig::default();
-    if let Err(e) = handle_session_with_agent(
-        socket,
-        session_id.clone(),
-        config,
-        handler_config,
-        client,
-    ).await {
+    if let Err(e) =
+        handle_session_with_agent(socket, session_id.clone(), config, handler_config, client).await
+    {
         error!("Session handler error for {}: {}", session_id, e);
     }
 

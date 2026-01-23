@@ -16,33 +16,23 @@ pub enum Decision {
 }
 
 /// Permission mode for session configuration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionMode {
     Auto,
+    #[default]
     Manual,
     Bypass,
 }
 
-impl Default for PermissionMode {
-    fn default() -> Self {
-        Self::Manual
-    }
-}
-
 /// Risk level for permission context.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for RiskLevel {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 /// Result subtype for Result messages.
