@@ -5,6 +5,7 @@ pub mod handler;
 pub mod message;
 pub mod protocol;
 pub mod server;
+pub mod session;
 
 pub use connection::ConnectionManager;
 pub use error::{Result, WebSocketError};
