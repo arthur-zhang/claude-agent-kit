@@ -239,6 +239,9 @@ async fn handle_client_message_with_agent(
             state.set_status(AgentState::Thinking).await;
 
             // Forward to agent SDK
+            // Note: Lock is held across await in query_string, but this is acceptable because
+            // query_string is a quick send operation that writes to the stream and returns
+            // immediately without waiting for a response. The lock duration is minimal.
             let mut client_guard = client.lock().await;
             if let Some(parent_id) = parent_tool_use_id {
                 // This is a tool result message
