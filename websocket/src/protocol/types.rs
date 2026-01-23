@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Decision type for permission responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Allow,
@@ -15,14 +15,42 @@ pub enum Decision {
     AllowAlways,
 }
 
+/// Permission mode for session configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    Auto,
+    Manual,
+    Bypass,
+}
+
+impl Default for PermissionMode {
+    fn default() -> Self {
+        Self::Manual
+    }
+}
+
+/// Risk level for permission context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for RiskLevel {
+    fn default() -> Self {
+        Self::Medium
+    }
+}
+
 /// Session configuration passed during session_start.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfig {
-    /// Session ID
-    pub session_id: String,
-    /// Permission mode: "auto", "manual", "bypass"
-    #[serde(default = "default_permission_mode")]
-    pub permission_mode: String,
+    /// Permission mode: auto, manual, or bypass
+    #[serde(default)]
+    pub permission_mode: PermissionMode,
     /// Maximum turns (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<i32>,
@@ -31,26 +59,18 @@ pub struct SessionConfig {
     pub metadata: HashMap<String, String>,
 }
 
-fn default_permission_mode() -> String {
-    "manual".to_string()
-}
-
 /// Permission context for permission_request messages.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PermissionContext {
     /// Human-readable description
     pub description: String,
-    /// Risk level: "low", "medium", "high"
-    #[serde(default = "default_risk_level")]
-    pub risk_level: String,
-}
-
-fn default_risk_level() -> String {
-    "medium".to_string()
+    /// Risk level: low, medium, or high
+    #[serde(default)]
+    pub risk_level: RiskLevel,
 }
 
 /// Messages sent from client to server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     /// User message - sends a text message to the agent
