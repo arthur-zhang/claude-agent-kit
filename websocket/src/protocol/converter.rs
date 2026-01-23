@@ -54,7 +54,9 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
                             },
                         });
                     }
-                    _ => {}
+                    other => {
+                        tracing::warn!("Unhandled ContentBlock variant: {:?}", other);
+                    }
                 }
             }
 
@@ -67,20 +69,23 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
             result
         }
         Message::Result(result) => {
-            // Convert string subtype to enum
-            let subtype = match result.subtype.as_str() {
-                "error" => ResultSubtype::Error,
-                "interrupted" => ResultSubtype::Interrupted,
-                _ => ResultSubtype::Success,
-            };
+            // Convert signed to unsigned, clamping negative values to 0
+            let duration_ms = result.duration_ms.max(0) as u64;
+            let duration_api_ms = result.duration_api_ms.max(0) as u64;
+            let num_turns = result.num_turns.max(0) as u32;
 
             vec![ServerMessage::Result {
                 id: Uuid::new_v4().to_string(),
                 session_id: session_id.to_string(),
-                subtype,
-                duration_ms: result.duration_ms as u64,
-                duration_api_ms: result.duration_api_ms as u64,
-                num_turns: result.num_turns as u32,
+                subtype: match result.subtype.as_str() {
+                    "success" => ResultSubtype::Success,
+                    "error" => ResultSubtype::Error,
+                    "interrupted" => ResultSubtype::Interrupted,
+                    _ => ResultSubtype::Error, // Default to error for unknown types
+                },
+                duration_ms,
+                duration_api_ms,
+                num_turns,
                 is_error: result.is_error,
                 error: result.result.clone(),
                 total_cost_usd: result.total_cost_usd,
