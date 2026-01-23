@@ -3,10 +3,13 @@
 //! Routes messages between WebSocket and agent SDK.
 
 use crate::protocol::types::*;
+use crate::protocol::converter;
 use crate::session::state::{SessionState, AgentState};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
+use claude_agent_sdk::ClaudeClient;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 /// Session handler configuration.
@@ -79,6 +82,114 @@ pub async fn handle_session(
     Ok(())
 }
 
+/// Handle a WebSocket session with agent SDK integration.
+pub async fn handle_session_with_agent(
+    websocket: WebSocket,
+    session_id: String,
+    config: SessionConfig,
+    handler_config: HandlerConfig,
+    client: Arc<Mutex<ClaudeClient>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let state = Arc::new(SessionState::new(session_id.clone(), config));
+    let (mut ws_sender, mut ws_receiver) = websocket.split();
+
+    info!("Starting session handler with agent SDK for session {}", session_id);
+
+    // Create a channel for agent messages to avoid holding the lock
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Spawn task to receive agent messages
+    let client_clone = Arc::clone(&client);
+    let session_id_clone = session_id.clone();
+    tokio::spawn(async move {
+        let mut client_guard = client_clone.lock().await;
+        match client_guard.receive_messages().await {
+            Ok(mut stream) => {
+                while let Some(msg_result) = stream.next().await {
+                    if agent_tx.send(msg_result).is_err() {
+                        break;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to get agent stream for session {}: {}", session_id_clone, e);
+            }
+        }
+    });
+
+    loop {
+        tokio::select! {
+            // Handle messages from agent SDK
+            Some(msg_result) = agent_rx.recv() => {
+                match msg_result {
+                    Ok(agent_msg) => {
+                        debug!("Received agent message: {:?}", agent_msg);
+
+                        // Convert agent message to protocol messages
+                        let protocol_msgs = converter::sdk_to_protocol(&agent_msg, &session_id);
+
+                        // Send each protocol message to WebSocket
+                        for protocol_msg in protocol_msgs {
+                            let json = serde_json::to_string(&protocol_msg)?;
+
+                            let send_result = tokio::time::timeout(
+                                std::time::Duration::from_secs(handler_config.send_timeout_secs),
+                                ws_sender.send(WsMessage::Text(json)),
+                            ).await;
+
+                            if let Err(e) = send_result {
+                                error!("Failed to send protocol message: {}", e);
+                                return Err(e.into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error in agent stream: {}", e);
+                        send_error(&mut ws_sender, &session_id, None, &format!("Agent error: {}", e), &handler_config).await;
+                        return Err(e.into());
+                    }
+                }
+            }
+
+            // Handle WebSocket messages from client
+            Some(ws_msg_result) = ws_receiver.next() => {
+                match ws_msg_result {
+                    Ok(WsMessage::Text(text)) => {
+                        debug!("Received WebSocket message: {}", text);
+
+                        let client_msg: ClientMessage = match serde_json::from_str(&text) {
+                            Ok(msg) => msg,
+                            Err(e) => {
+                                error!("Failed to parse client message: {}", e);
+                                send_error(&mut ws_sender, &session_id, None, &format!("Invalid message: {}", e), &handler_config).await;
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = handle_client_message_with_agent(client_msg, &state, &client, &mut ws_sender, &handler_config).await {
+                            error!("Error handling client message: {}", e);
+                            break;
+                        }
+                    }
+                    Ok(WsMessage::Close(_)) => {
+                        info!("WebSocket closed by client");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("WebSocket error: {}", e);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            else => break,
+        }
+    }
+
+    info!("Session handler with agent SDK ending for session {}", session_id);
+    Ok(())
+}
+
 /// Handle a client message.
 async fn handle_client_message(
     msg: ClientMessage,
@@ -104,6 +215,71 @@ async fn handle_client_message(
         ClientMessage::PermissionResponse { request_id, decision, .. } => {
             debug!("Permission response for request {}: {:?}", request_id, decision);
             // TODO: Handle permission response via pending_permission
+        }
+        ClientMessage::SessionEnd { .. } => {
+            info!("Session end requested");
+        }
+        _ => {
+            debug!("Unhandled message type");
+        }
+    }
+    Ok(())
+}
+
+/// Handle a client message with agent SDK integration.
+async fn handle_client_message_with_agent(
+    msg: ClientMessage,
+    state: &Arc<SessionState>,
+    client: &Arc<Mutex<ClaudeClient>>,
+    ws_sender: &mut futures::stream::SplitSink<WebSocket, WsMessage>,
+    config: &HandlerConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match msg {
+        ClientMessage::SessionStart { session_id: client_session_id, .. } => {
+            // Validate session ID matches
+            if client_session_id != state.session_id {
+                warn!("Session ID mismatch: expected {}, got {}", state.session_id, client_session_id);
+                send_error(ws_sender, &state.session_id, None, "Session ID mismatch", config).await;
+                return Err("Session ID mismatch".into());
+            }
+            info!("Session start: {}", client_session_id);
+            send_session_info(ws_sender, &state.session_id, SessionStatus::Active, config).await?;
+        }
+        ClientMessage::UserMessage { content, parent_tool_use_id, .. } => {
+            info!("Forwarding user message to agent");
+            state.set_status(AgentState::Thinking).await;
+
+            // Forward to agent SDK
+            let mut client_guard = client.lock().await;
+            if let Some(parent_id) = parent_tool_use_id {
+                // This is a tool result message
+                client_guard.query_string(&content, Some(parent_id)).await?;
+            } else {
+                // Regular user query
+                client_guard.query_string(&content, None).await?;
+            }
+        }
+        ClientMessage::PermissionResponse { request_id, decision, .. } => {
+            debug!("Permission response for request {}: {:?}", request_id, decision);
+
+            // Get pending permission and send decision
+            let mut pending = state.pending_permission.lock().await;
+            if let Some(perm) = pending.take() {
+                if perm.request_id == request_id {
+                    let allow = matches!(decision, Decision::Allow | Decision::AllowAlways);
+                    let _ = perm.response_tx.send(allow);
+
+                    if allow {
+                        state.set_status(AgentState::ExecutingTool).await;
+                    } else {
+                        state.set_status(AgentState::Idle).await;
+                    }
+                } else {
+                    warn!("Permission request ID mismatch: expected {}, got {}", perm.request_id, request_id);
+                }
+            } else {
+                warn!("No pending permission request for ID {}", request_id);
+            }
         }
         ClientMessage::SessionEnd { .. } => {
             info!("Session end requested");

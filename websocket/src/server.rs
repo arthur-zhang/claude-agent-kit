@@ -100,11 +100,12 @@ async fn handle_socket(socket: WebSocket, state: AppState, session_id: String) {
     // Create new client
     let options = ClaudeAgentOptions::new();
     // let mut new_client = ClaudeClient::new(options);
-    let prompt = PromptInput::Stream;
+    let (_tx, rx) = mpsc::channel::<serde_json::Value>(1);
+    let prompt = PromptInput::Stream(rx);
     let mut t = SubprocessCLITransport::new(prompt, options).unwrap();
     t.connect().await.unwrap();
 
-    let (mut r, mut w, _, process_handle) = t.split().unwrap();
+    let (r, mut w, _, _process_handle) = t.split().unwrap();
 
     let (tx, mut rx) = mpsc::channel::<String>(100);
     tokio::spawn(async move {

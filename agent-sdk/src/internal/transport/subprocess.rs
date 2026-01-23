@@ -115,7 +115,7 @@ pub struct SubprocessCLITransport {
 /// ```
 pub enum PromptInput {
     String(String),
-    Stream,
+    Stream(tokio::sync::mpsc::Receiver<serde_json::Value>),
 }
 
 impl SubprocessCLITransport {
@@ -405,7 +405,7 @@ impl SubprocessCLITransport {
 
         // Prompt handling
         match &self.prompt {
-            PromptInput::Stream => {
+            PromptInput::Stream(_) => {
                 cmd.push("--input-format".to_string());
                 cmd.push("stream-json".to_string());
             }
