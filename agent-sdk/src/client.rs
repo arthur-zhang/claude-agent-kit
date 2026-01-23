@@ -329,7 +329,7 @@ impl ClaudeClient {
     /// Returns an error if not connected
     pub async fn receive_messages(
         &mut self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send>>> {
         let query = self.query.as_mut().ok_or_else(|| {
             Error::CLIConnection("Not connected. Call connect() first.".to_string())
         })?;
@@ -362,7 +362,7 @@ impl ClaudeClient {
     /// Returns an error if not connected
     pub async fn receive_response(
         &mut self,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send + '_>>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Message>> + Send>>> {
         let mut messages = self.receive_messages().await?;
 
         let response_stream = stream! {

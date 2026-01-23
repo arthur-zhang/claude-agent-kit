@@ -93,60 +93,48 @@ pub async fn handle_session_with_agent(
     let state = Arc::new(SessionState::new(session_id.clone(), config));
     let (mut ws_sender, mut ws_receiver) = websocket.split();
 
+    // Get agent message stream (acquire lock briefly)
+    let mut agent_stream = {
+        let mut client_guard = client.lock().await;
+        client_guard.receive_messages().await?
+    }; // Lock released here
+
     info!("Starting session handler with agent SDK for session {}", session_id);
-
-    // Create a channel for agent messages to avoid holding the lock
-    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-
-    // Spawn task to receive agent messages
-    let client_clone = Arc::clone(&client);
-    let session_id_clone = session_id.clone();
-    tokio::spawn(async move {
-        let mut client_guard = client_clone.lock().await;
-        match client_guard.receive_messages().await {
-            Ok(mut stream) => {
-                while let Some(msg_result) = stream.next().await {
-                    if agent_tx.send(msg_result).is_err() {
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Failed to get agent stream for session {}: {}", session_id_clone, e);
-            }
-        }
-    });
 
     loop {
         tokio::select! {
-            // Handle messages from agent SDK
-            Some(msg_result) = agent_rx.recv() => {
+            // Handle agent messages
+            Some(msg_result) = agent_stream.next() => {
                 match msg_result {
                     Ok(agent_msg) => {
                         debug!("Received agent message: {:?}", agent_msg);
-
-                        // Convert agent message to protocol messages
                         let protocol_msgs = converter::sdk_to_protocol(&agent_msg, &session_id);
 
-                        // Send each protocol message to WebSocket
-                        for protocol_msg in protocol_msgs {
-                            let json = serde_json::to_string(&protocol_msg)?;
+                        for proto_msg in protocol_msgs {
+                            if let Ok(json) = serde_json::to_string(&proto_msg) {
+                                let send_result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(handler_config.send_timeout_secs),
+                                    ws_sender.send(WsMessage::Text(json)),
+                                ).await;
 
-                            let send_result = tokio::time::timeout(
-                                std::time::Duration::from_secs(handler_config.send_timeout_secs),
-                                ws_sender.send(WsMessage::Text(json)),
-                            ).await;
-
-                            if let Err(e) = send_result {
-                                error!("Failed to send protocol message: {}", e);
-                                return Err(e.into());
+                                match send_result {
+                                    Ok(Ok(_)) => {},
+                                    Ok(Err(e)) => {
+                                        error!("Failed to send protocol message: {}", e);
+                                        return Err(e.into());
+                                    }
+                                    Err(_) => {
+                                        error!("Timeout sending protocol message");
+                                        return Err("Send timeout".into());
+                                    }
+                                }
                             }
                         }
                     }
                     Err(e) => {
-                        error!("Error in agent stream: {}", e);
+                        error!("Agent stream error: {}", e);
                         send_error(&mut ws_sender, &session_id, None, &format!("Agent error: {}", e), &handler_config).await;
-                        return Err(e.into());
+                        break;
                     }
                 }
             }
@@ -182,6 +170,7 @@ pub async fn handle_session_with_agent(
                     _ => {}
                 }
             }
+
             else => break,
         }
     }
