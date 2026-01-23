@@ -1,24 +1,19 @@
 use crate::connection::ConnectionManager;
+use crate::session::handler::{handle_session_with_agent, HandlerConfig};
+use crate::protocol::types::{SessionConfig, PermissionMode};
 use axum::{
     Router,
     extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
-    response::{Response, IntoResponse, Html},
+    response::{Response, IntoResponse},
     routing::get,
     http::{StatusCode, header},
 };
-use axum::extract::ws::Message;
-use claude_agent_sdk::internal::transport::{PromptInput, SubprocessCLITransport};
-use claude_agent_sdk::{
-    ClaudeAgentOptions,  SDKControlRequest, SDKControlRequestType,
-};
-use futures::{SinkExt, StreamExt};
+use claude_agent_sdk::{ClaudeAgentOptions, ClaudeClient};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::spawn;
-use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info};
-use claude_agent_sdk::messages::InputMessage;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{error, info};
 
 // Embed static files at compile time
 #[derive(RustEmbed)]
@@ -87,103 +82,38 @@ async fn ws_handler(
     ws.on_upgrade(move |socket| handle_socket(socket, state, session_id))
 }
 
-async fn handle_socket(socket: WebSocket, state: AppState, session_id: String) {
+async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) {
     info!("New WebSocket connection for session {}", session_id);
 
-    // Check if client already exists for this session_id
-    // let client = if let Some(existing_client) = state.session_manager.get(&session_id) {
-    //     info!("Reusing existing client for session {}", session_id);
-    //     existing_client
-    // } else {
-    info!("Creating new client for session {}", session_id);
-
-    // Create new client
+    // Create client
     let options = ClaudeAgentOptions::new();
-    // let mut new_client = ClaudeClient::new(options);
-    let (_tx, rx) = mpsc::channel::<serde_json::Value>(1);
-    let prompt = PromptInput::Stream(rx);
-    let mut t = SubprocessCLITransport::new(prompt, options).unwrap();
-    t.connect().await.unwrap();
+    let mut client = ClaudeClient::new(options);
 
-    let (r, mut w, _, _process_handle) = t.split().unwrap();
+    // Connect to Claude
+    if let Err(e) = client.connect(None).await {
+        error!("Failed to connect client for session {}: {}", session_id, e);
+        return;
+    }
 
-    let (tx, mut rx) = mpsc::channel::<String>(100);
-    tokio::spawn(async move {
-        while let Some(it) = rx.recv().await {
-            println!("send stdin <<<<<{:?}", it);
-            let _ = w.write_with_newline(&it).await;
-        }
-        println!("closing transport");
-    });
+    let client = Arc::new(Mutex::new(client));
 
-    let init_req = SDKControlRequest {
-        type_: "control_request".to_string(),
-        request_id: uuid::Uuid::new_v4().to_string(),
-        request: SDKControlRequestType::Initialize {hooks:None},
+    // Create session config
+    let config = SessionConfig {
+        permission_mode: PermissionMode::Manual,
+        max_turns: None,
+        metadata: Default::default(),
     };
-    let payload = serde_json::to_string(&init_req).unwrap();
 
-    tx.send(payload).await.unwrap();
-
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-
-    let (ws_tx, mut ws_rx) = mpsc::channel::<String>(100);
-    tokio::spawn(async move {
-        while let Some(it) = ws_rx.recv().await {
-            ws_sender.send(Message::Text(it)).await.unwrap();
-        }
-    });
-    tokio::spawn({
-        let session_id = session_id.clone();
-        async move {
-            while let Some(Ok(it)) = ws_receiver.next().await {
-                match it {
-                    Message::Text(text) => {
-                        info!("Received WebSocket message {text}");
-
-                        let json: Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("Parse error: {}", e);
-                                continue;
-                            }
-                        };
-
-                        let prompt = json.get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("");
-
-                        // Send query using a brief lock on the send client
-                        let payload = InputMessage::user(prompt.to_string(), session_id.clone());
-                        let payload = serde_json::to_string(&payload).unwrap();
-
-                        if let Err(e) = tx.send(payload).await {
-                            error!("Failed to query agent: {}", e);
-                            // Send error message to client
-
-                            break;
-                        }
-                    }
-                    Message::Binary(_) => {}
-                    Message::Ping(_) => {}
-                    Message::Pong(_) => {}
-                    Message::Close(_) => {
-                        break;
-                    }
-                }
-
-            }
-        }
-    });
-
-
-
-    let mut m = r.read_messages();
-    while let Some(msg) = m.recv().await {
-        println!("recv stdout >>>>>{:?}", msg);
-        let payload = serde_json::to_string(&msg).unwrap();
-        ws_tx.send(payload).await.unwrap();
+    // Use new handler
+    let handler_config = HandlerConfig::default();
+    if let Err(e) = handle_session_with_agent(
+        socket,
+        session_id.clone(),
+        config,
+        handler_config,
+        client,
+    ).await {
+        error!("Session handler error for {}: {}", session_id, e);
     }
 
     info!("WebSocket connection closed for session {}", session_id);
