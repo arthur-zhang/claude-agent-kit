@@ -106,7 +106,7 @@ pub struct SDKControlRequest {
     #[serde(rename = "type")]
     pub type_: String, // "control_request"
     pub request_id: String,
-    #[serde(flatten)]
+    // #[serde(flatten)]
     pub request: SDKControlRequestType,
 }
 

@@ -16,6 +16,8 @@ claude-agent-sdk = { path = "../agent-sdk" }
 async-stream = "0.3"
 tower-http = { version = "0.6", features = ["fs"] }
 dashmap = "6"
+rust-embed = "8.5"
+mime_guess = "2.0"
 
 [dev-dependencies]
 tokio-tungstenite = "0.24"

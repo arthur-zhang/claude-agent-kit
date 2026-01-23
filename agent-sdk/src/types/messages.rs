@@ -123,6 +123,33 @@ pub enum Message {
     Stream(StreamEvent),
 }
 
+/// Input message structure for sending to Claude
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InputMessage {
+    /// Message type (always "user")
+    #[serde(rename = "type")]
+    pub r#type: String,
+    /// Message content
+    pub message: serde_json::Value,
+    /// Parent tool use ID (for tool results)
+    pub parent_tool_use_id: Option<String>,
+    /// Session ID
+    pub session_id: String,
+}
+impl InputMessage {
+    /// Create a new user message
+    pub fn user(content: String, session_id: String) -> Self {
+        Self {
+            r#type: "user".to_string(),
+            message: serde_json::json!({
+                "role": "user",
+                "content": content
+            }),
+            parent_tool_use_id: None,
+            session_id,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

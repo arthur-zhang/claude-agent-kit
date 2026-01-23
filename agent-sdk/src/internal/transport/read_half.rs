@@ -90,6 +90,7 @@ impl<R: AsyncRead + Unpin + Send + 'static> ReadHalf<R> {
         tokio::spawn(async move {
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
+                println!("!!!!read line: {:?}", line);
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
                     if tx.send(json).await.is_err() {
                         break;

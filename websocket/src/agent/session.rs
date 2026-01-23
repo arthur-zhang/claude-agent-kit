@@ -2,7 +2,7 @@
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use claude_agent_sdk::Message::System;
-use claude_agent_sdk::{ClaudeClient, Error};
+use claude_agent_sdk::{ Error};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -36,7 +36,7 @@ impl AgentSession {
     pub async fn run(
         self,
         websocket: WebSocket,
-        client: Arc<Mutex<ClaudeClient>>,
+        // client: Arc<Mutex<ClaudeClient>>,
         session_id: String,
     ) -> Result<(), Error> {
         info!(
@@ -49,8 +49,8 @@ impl AgentSession {
 
         let session_id_map = Arc::new(DashMap::new());
         // Get two clones of the client for separate tasks
-        let client_for_receive = Arc::clone(&client);
-        let client_for_send = Arc::clone(&client);
+        // let client_for_receive = Arc::clone(&client);
+        // let client_for_send = Arc::clone(&client);
 
         // Create channel for agent messages
         let (agent_msg_tx, mut agent_msg_rx) = mpsc::unbounded_channel();

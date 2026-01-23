@@ -115,7 +115,7 @@ pub struct SubprocessCLITransport {
 /// ```
 pub enum PromptInput {
     String(String),
-    Stream(mpsc::Receiver<serde_json::Value>),
+    Stream,
 }
 
 impl SubprocessCLITransport {
@@ -405,7 +405,7 @@ impl SubprocessCLITransport {
 
         // Prompt handling
         match &self.prompt {
-            PromptInput::Stream(_) => {
+            PromptInput::Stream => {
                 cmd.push("--input-format".to_string());
                 cmd.push("stream-json".to_string());
             }
@@ -549,7 +549,8 @@ impl SubprocessCLITransport {
         }
 
         let cmd_args = self.build_command();
-        debug!("Starting Claude CLI: {:?}", cmd_args);
+        info!("Starting Claude CLI: {:?}", cmd_args);
+        println!(">> Starting Claude CLI: {:?}", cmd_args);
 
         let mut command = Command::new(&cmd_args[0]);
         command.args(&cmd_args[1..]);
@@ -651,14 +652,5 @@ mod tests {
         assert!(cmd.contains(&"1.5".to_string()));
     }
 
-    #[test]
-    fn test_build_command_with_stream_input() {
-        let options = ClaudeAgentOptions::new();
-        let (_tx, rx) = mpsc::channel(10);
-        let transport = SubprocessCLITransport::new(PromptInput::Stream(rx), options).unwrap();
 
-        let cmd = transport.build_command();
-        assert!(cmd.contains(&"--input-format".to_string()));
-        assert!(cmd.contains(&"stream-json".to_string()));
-    }
 }

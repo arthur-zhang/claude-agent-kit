@@ -28,11 +28,11 @@
 //! - [`internal`] - Internal implementation (transport, query, client)
 //! - [`client`] - High-level client API
 
-pub mod client;
+// pub mod client;
 pub mod internal;
 pub mod types;
 
 // Re-export all public types at the crate root for convenience
-pub use client::ClaudeClient;
-pub use internal::InternalClient;
+// pub use client::ClaudeClient;
+// pub use internal::InternalClient;
 pub use types::*;

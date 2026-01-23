@@ -86,4 +86,24 @@ impl<W: AsyncWrite + Unpin + Send> WriteHalf<W> {
         self.writer.flush().await.map_err(Error::Io)?;
         Ok(())
     }
+
+    pub async fn write_with_newline(&mut self, data: &str) -> Result<()> {
+        self.writer
+            .write_all(data.as_bytes())
+            .await
+            .map_err(Error::Io)?;
+        self.writer.write_all(b"\n").await.map_err(Error::Io)?;
+        self.writer.flush().await.map_err(Error::Io)?;
+        Ok(())
+    }
+    pub async fn write_json<T: serde::Serialize>(&mut self, message: &T) -> Result<()> {
+        let json = serde_json::to_string(message)?;
+        self.writer
+            .write_all(json.as_bytes())
+            .await
+            .map_err(Error::Io)?;
+        self.writer.write_all(b"\n").await.map_err(Error::Io)?;
+        self.writer.flush().await.map_err(Error::Io)?;
+        Ok(())
+    }
 }

@@ -129,7 +129,7 @@ impl ClaudeClient {
 
         let actual_prompt = match prompt {
             Some(ClientPromptInput::String(s)) => TransportPromptInput::String(s),
-            Some(ClientPromptInput::Stream(rx)) => TransportPromptInput::Stream(rx),
+            Some(ClientPromptInput::Stream()) => TransportPromptInput::Stream(rx),
             Some(ClientPromptInput::None) | None => TransportPromptInput::Stream(empty_rx),
         };
 
