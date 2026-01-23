@@ -3,13 +3,10 @@
 //! Routes messages between WebSocket and agent SDK.
 
 use crate::protocol::types::*;
-use crate::protocol::converter;
 use crate::session::state::{SessionState, AgentState};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use claude_agent_sdk::Message;
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 /// Session handler configuration.
@@ -90,9 +87,15 @@ async fn handle_client_message(
     config: &HandlerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match msg {
-        ClientMessage::SessionStart { session_id, config: session_config, .. } => {
-            info!("Session start: {}", session_id);
-            send_session_info(ws_sender, &session_id, SessionStatus::Active, config).await?;
+        ClientMessage::SessionStart { session_id: client_session_id, config: session_config, .. } => {
+            // Validate session ID matches
+            if client_session_id != state.session_id {
+                warn!("Session ID mismatch: expected {}, got {}", state.session_id, client_session_id);
+                send_error(ws_sender, &state.session_id, None, "Session ID mismatch", config).await;
+                return Err("Session ID mismatch".into());
+            }
+            info!("Session start: {}", client_session_id);
+            send_session_info(ws_sender, &state.session_id, SessionStatus::Active, config).await?;
         }
         ClientMessage::UserMessage { .. } => {
             // TODO: Forward to agent SDK
@@ -127,11 +130,20 @@ async fn send_error(
         message: message.to_string(),
     };
 
-    if let Ok(json) = serde_json::to_string(&error_msg) {
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(config.send_timeout_secs),
-            ws_sender.send(WsMessage::Text(json)),
-        ).await;
+    match serde_json::to_string(&error_msg) {
+        Ok(json) => {
+            let send_result = tokio::time::timeout(
+                std::time::Duration::from_secs(config.send_timeout_secs),
+                ws_sender.send(WsMessage::Text(json)),
+            ).await;
+
+            if let Err(e) = send_result {
+                error!("Failed to send error message: {}", e);
+            }
+        }
+        Err(e) => {
+            error!("Failed to serialize error message: {}", e);
+        }
     }
 }
 
