@@ -405,4 +405,62 @@ mod server_message_tests {
         assert!(json.contains("\"delta_type\":\"text\""));
         assert!(json.contains("\"text\":\"Hello\""));
     }
+
+    #[test]
+    fn test_result_subtype_serialization() {
+        let subtype = ResultSubtype::Success;
+        let json = serde_json::to_string(&subtype).unwrap();
+        assert_eq!(json, "\"success\"");
+
+        let subtype = ResultSubtype::Error;
+        let json = serde_json::to_string(&subtype).unwrap();
+        assert_eq!(json, "\"error\"");
+
+        let subtype = ResultSubtype::Interrupted;
+        let json = serde_json::to_string(&subtype).unwrap();
+        assert_eq!(json, "\"interrupted\"");
+    }
+
+    #[test]
+    fn test_session_status_serialization() {
+        let status = SessionStatus::Active;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"active\"");
+
+        let status = SessionStatus::Completed;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, "\"completed\"");
+    }
+
+    #[test]
+    fn test_result_message_serialization() {
+        let msg = ServerMessage::Result {
+            id: "result-1".to_string(),
+            session_id: "session-123".to_string(),
+            subtype: ResultSubtype::Success,
+            duration_ms: 1500,
+            duration_api_ms: 1200,
+            num_turns: 3,
+            is_error: false,
+            error: None,
+            total_cost_usd: Some(0.05),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"result\""));
+        assert!(json.contains("\"subtype\":\"success\""));
+        assert!(json.contains("\"duration_ms\":1500"));
+        assert!(json.contains("\"num_turns\":3"));
+    }
+
+    #[test]
+    fn test_session_info_serialization() {
+        let msg = ServerMessage::SessionInfo {
+            id: "info-1".to_string(),
+            session_id: "session-123".to_string(),
+            status: SessionStatus::Active,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"type\":\"session_info\""));
+        assert!(json.contains("\"status\":\"active\""));
+    }
 }
