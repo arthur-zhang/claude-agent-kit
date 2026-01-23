@@ -45,6 +45,25 @@ impl Default for RiskLevel {
     }
 }
 
+/// Result subtype for Result messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultSubtype {
+    Success,
+    Error,
+    Interrupted,
+}
+
+/// Session status for SessionInfo messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionStatus {
+    Active,
+    Paused,
+    Completed,
+    Error,
+}
+
 /// Session configuration passed during session_start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -264,14 +283,14 @@ pub enum ServerMessage {
         id: String,
         /// Session ID
         session_id: String,
-        /// Result subtype: "success", "error", "interrupted"
-        subtype: String,
+        /// Result subtype: success, error, or interrupted
+        subtype: ResultSubtype,
         /// Duration in milliseconds
-        duration_ms: i64,
+        duration_ms: u64,
         /// API duration in milliseconds
-        duration_api_ms: i64,
+        duration_api_ms: u64,
         /// Number of turns
-        num_turns: i32,
+        num_turns: u32,
         /// Whether the result indicates an error
         is_error: bool,
         /// Optional error message
@@ -312,7 +331,7 @@ pub enum ServerMessage {
         /// Session ID
         session_id: String,
         /// Session status
-        status: String,
+        status: SessionStatus,
     },
 
     /// Heartbeat - keep-alive message
@@ -322,7 +341,7 @@ pub enum ServerMessage {
         /// Session ID
         session_id: String,
         /// Timestamp
-        timestamp: i64,
+        timestamp: u64,
     },
 }
 
