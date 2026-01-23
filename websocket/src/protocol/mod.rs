@@ -3,4 +3,5 @@
 pub mod types;
 pub mod converter;
 
-pub use types::{ClientMessage, ServerMessage};
+// Re-exports will be added when types are implemented in Tasks 2-3
+// pub use types::{ClientMessage, ServerMessage};
