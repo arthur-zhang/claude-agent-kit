@@ -81,7 +81,10 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
                     "success" => ResultSubtype::Success,
                     "error" => ResultSubtype::Error,
                     "interrupted" => ResultSubtype::Interrupted,
-                    _ => ResultSubtype::Error, // Default to error for unknown types
+                    unknown => {
+                        tracing::warn!("Unknown result subtype '{}', defaulting to Error", unknown);
+                        ResultSubtype::Error
+                    }
                 },
                 duration_ms,
                 duration_api_ms,
@@ -96,7 +99,10 @@ pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage
             tracing::debug!("System message: subtype={}, data={:?}", system.subtype, system.data);
             vec![]
         }
-        _ => vec![],
+        other => {
+            tracing::warn!("Unhandled Message variant: {:?}", other);
+            vec![]
+        }
     }
 }
 
