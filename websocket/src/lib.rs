@@ -3,6 +3,7 @@ pub mod connection;
 pub mod error;
 pub mod handler;
 pub mod message;
+pub mod protocol;
 pub mod server;
 
 pub use connection::ConnectionManager;
