@@ -1,0 +1,242 @@
+//! Protocol message conversion.
+//!
+//! Converts between agent-sdk message types and WebSocket protocol message types.
+
+use crate::protocol::types::*;
+use claude_agent_sdk::{ContentBlock, ContentBlockContent, Message, MessageContent};
+use uuid::Uuid;
+
+/// Convert SDK message to protocol message(s).
+///
+/// A single SDK message may map to multiple protocol messages
+/// (e.g., Assistant → start + deltas + complete).
+pub fn sdk_to_protocol(sdk_msg: &Message, session_id: &str) -> Vec<ServerMessage> {
+    match sdk_msg {
+        Message::Assistant(assistant) => {
+            let msg_id = Uuid::new_v4().to_string();
+            let mut result = vec![];
+
+            // Start message
+            result.push(ServerMessage::AssistantMessageStart {
+                id: msg_id.clone(),
+                session_id: session_id.to_string(),
+                model: assistant.model.clone(),
+            });
+
+            // Content blocks
+            for block in &assistant.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        result.push(ServerMessage::AssistantMessageDelta {
+                            id: msg_id.clone(),
+                            session_id: session_id.to_string(),
+                            delta: Delta::Text { text: text.clone() },
+                        });
+                    }
+                    ContentBlock::ToolUse { id, name, input } => {
+                        // Send as separate tool_use message only
+                        result.push(ServerMessage::ToolUse {
+                            id: Uuid::new_v4().to_string(),
+                            session_id: session_id.to_string(),
+                            tool_use_id: id.clone(),
+                            tool_name: name.clone(),
+                            tool_input: input.clone(),
+                        });
+                    }
+                    ContentBlock::Thinking { thinking, .. } => {
+                        result.push(ServerMessage::AssistantMessageDelta {
+                            id: msg_id.clone(),
+                            session_id: session_id.to_string(),
+                            delta: Delta::Thinking {
+                                thinking: thinking.clone(),
+                            },
+                        });
+                    }
+                    other => {
+                        tracing::warn!("Unhandled ContentBlock variant: {:?}", other);
+                    }
+                }
+            }
+
+            // Complete message
+            result.push(ServerMessage::AssistantMessageComplete {
+                id: msg_id,
+                session_id: session_id.to_string(),
+            });
+
+            result
+        }
+        Message::Result(result) => {
+            // Convert signed to unsigned, clamping negative values to 0
+            let duration_ms = result.duration_ms.max(0) as u64;
+            let duration_api_ms = result.duration_api_ms.max(0) as u64;
+            let num_turns = result.num_turns.max(0) as u32;
+
+            vec![ServerMessage::Result {
+                id: Uuid::new_v4().to_string(),
+                session_id: session_id.to_string(),
+                subtype: match result.subtype.as_str() {
+                    "success" => ResultSubtype::Success,
+                    "error" => ResultSubtype::Error,
+                    "interrupted" => ResultSubtype::Interrupted,
+                    unknown => {
+                        tracing::warn!("Unknown result subtype '{}', defaulting to Error", unknown);
+                        ResultSubtype::Error
+                    }
+                },
+                duration_ms,
+                duration_api_ms,
+                num_turns,
+                is_error: result.is_error,
+                error: result.result.clone(),
+                total_cost_usd: result.total_cost_usd,
+            }]
+        }
+        Message::System(system) => {
+            tracing::debug!(
+                "System message: subtype={}, extra={:?}",
+                system.subtype,
+                system.extra
+            );
+
+            // Handle init system message
+            if system.subtype == "init" {
+                tracing::info!("📋 Received init system message, converting to SystemInit");
+                return vec![ServerMessage::SystemInit {
+                    id: Uuid::new_v4().to_string(),
+                    session_id: session_id.to_string(),
+                    init_data: serde_json::Value::Object(system.extra.clone()),
+                }];
+            }
+
+            // Other system messages are not forwarded to client
+            vec![]
+        }
+        Message::User(user) => {
+            // Handle User messages that contain ToolResult blocks
+            let mut result = vec![];
+
+            // Check if content is Blocks variant
+            if let MessageContent::Blocks(blocks) = &user.content {
+                for block in blocks {
+                    match block {
+                        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                            let content_str = match content {
+                                Some(ContentBlockContent::String(s)) => s.clone(),
+                                Some(ContentBlockContent::Array(arr)) => {
+                                    serde_json::to_string(arr).unwrap_or_default()
+                                }
+                                None => String::new(),
+                            };
+
+                            result.push(ServerMessage::ToolResult {
+                                id: Uuid::new_v4().to_string(),
+                                session_id: session_id.to_string(),
+                                request_id: tool_use_id.clone(),
+                                tool_use_id: tool_use_id.clone(),
+                                content: content_str,
+                                is_error: is_error.unwrap_or(false),
+                            });
+                        }
+                        ContentBlock::Text { text } => {
+                            // User text messages - could be displayed as system messages
+                            tracing::debug!("User message text: {}", text);
+                        }
+                        other => {
+                            tracing::debug!("Unhandled User ContentBlock variant: {:?}", other);
+                        }
+                    }
+                }
+            } else if let MessageContent::String(text) = &user.content {
+                tracing::debug!("User message string: {}", text);
+            }
+
+            result
+        }
+        other => {
+            tracing::warn!("Unhandled Message variant: {:?}", other);
+            vec![]
+        }
+    }
+}
+
+/// Convert protocol client message to SDK input.
+pub fn protocol_to_sdk_input(client_msg: &ClientMessage) -> Option<SdkInput> {
+    match client_msg {
+        ClientMessage::UserMessage {
+            content,
+            parent_tool_use_id,
+            ..
+        } => Some(SdkInput::Query {
+            content: content.clone(),
+            parent_tool_use_id: parent_tool_use_id.clone(),
+        }),
+        ClientMessage::PermissionResponse { decision, .. } => Some(SdkInput::PermissionDecision {
+            allow: matches!(decision, Decision::Allow | Decision::AllowAlways),
+        }),
+        _ => None,
+    }
+}
+
+/// SDK input representation for conversion.
+#[derive(Debug, Clone)]
+pub enum SdkInput {
+    Query {
+        content: String,
+        parent_tool_use_id: Option<String>,
+    },
+    PermissionDecision {
+        allow: bool,
+    },
+}
+
+#[cfg(test)]
+mod converter_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_sdk_assistant_message_to_protocol() {
+        // This will fail initially - we'll implement after
+        let sdk_msg = Message::Assistant(claude_agent_sdk::AssistantMessage {
+            content: vec![ContentBlock::Text {
+                text: "Hello, world!".to_string(),
+            }],
+            model: "claude-sonnet-4".to_string(),
+            parent_tool_use_id: None,
+            error: None,
+        });
+
+        let protocol_msgs = crate::protocol::converter::sdk_to_protocol(&sdk_msg, "session-123");
+
+        // Should produce: start, delta (text), complete
+        assert_eq!(protocol_msgs.len(), 3);
+        assert!(matches!(
+            protocol_msgs[0],
+            ServerMessage::AssistantMessageStart { .. }
+        ));
+        assert!(matches!(
+            protocol_msgs[2],
+            ServerMessage::AssistantMessageComplete { .. }
+        ));
+    }
+
+    #[test]
+    fn test_sdk_tool_use_to_protocol() {
+        let sdk_msg = Message::Assistant(claude_agent_sdk::AssistantMessage {
+            content: vec![ContentBlock::ToolUse {
+                id: "tool-1".to_string(),
+                name: "Bash".to_string(),
+                input: json!({"command": "ls"}),
+            }],
+            model: "claude-sonnet-4".to_string(),
+            parent_tool_use_id: None,
+            error: None,
+        });
+
+        let protocol_msgs = crate::protocol::converter::sdk_to_protocol(&sdk_msg, "session-123");
+
+        // Should produce: start, tool_use, complete
+        assert_eq!(protocol_msgs.len(), 3);
+    }
+}

@@ -1,0 +1,14 @@
+{
+  "type": "control_request",
+  "session_id": "5cbf8363-fc50-44b4-8b82-39da87c24e0a",
+  "request_id": "5ffa967d-ed16-408b-9e82-37ea3c0a7502",
+  "tool_name": "WebSearch",
+  "tool_use_id": null,
+  "input": {
+    "query": "GLM 模型架构技术细节 ChatGLM-3 GLM-4 原理"
+  },
+  "context": {
+    "description": "Tool permission request",
+    "risk_level": "medium"
+  }
+}

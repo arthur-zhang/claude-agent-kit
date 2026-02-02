@@ -1,0 +1,26 @@
+[package]
+name = "websocket"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+claude-agent-sdk = { path = "../agent-sdk" }
+async-stream = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
+dashmap = "6"
+rust-embed = "8.5"
+mime_guess = "2.0"
+async-trait = "0.1"
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"

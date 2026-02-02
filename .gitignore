@@ -1,0 +1,25 @@
+# Rust
+/target
+**/target/
+Cargo.lock
+**/Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Worktrees
+.worktrees/
+bun.lock
+**/node_modules
+.env
+
+# Frontend build output
+websocket/static/
