@@ -15,13 +15,21 @@ export type {
   SDKHookResponseMessage,
   SDKToolProgressMessage,
   SDKAuthStatusMessage,
-  PermissionMode,
   SlashCommand,
   McpServerStatus,
   AccountInfo,
 } from '@anthropic-ai/claude-agent-sdk';
 
-import type { SDKMessage, PermissionMode, SlashCommand, McpServerStatus } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage, SlashCommand, McpServerStatus } from '@anthropic-ai/claude-agent-sdk';
+
+// Permission mode type - matches Claude Code CLI --permission-mode values
+export type PermissionMode =
+  | 'default'
+  | 'acceptEdits'
+  | 'bypassPermissions'
+  | 'plan'
+  | 'delegate'
+  | 'dontAsk';
 
 // ============================================================================
 // Frontend -> Sidecar requests (conductor-bundle format)
@@ -58,6 +66,10 @@ export interface WorkspaceInitRequest {
     permissionMode?: PermissionMode;
     disallowedTools?: string[];
     maxThinkingTokens?: number;
+    /** Allow bypassing permission checks (required for bypassPermissions mode) */
+    dangerouslySkipPermissions?: boolean;
+    /** Resume a previous session by its session ID */
+    resume?: string;
   };
 }
 

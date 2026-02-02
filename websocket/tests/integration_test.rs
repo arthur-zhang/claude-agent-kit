@@ -1,7 +1,7 @@
 //! WebSocket protocol integration tests.
 
+use websocket::protocol::events::ClientMessage;
 use websocket::protocol::types::*;
-// use websocket::session::handler::{handle_session, HandlerConfig};
 
 #[tokio::test]
 async fn test_session_start_flow() {
@@ -25,7 +25,6 @@ async fn test_permission_request_flow() {
 async fn test_message_serialization() {
     // Test: Verify protocol messages serialize/deserialize correctly
     let msg = ClientMessage::UserMessage {
-        id: "test-1".to_string(),
         session_id: "session-123".to_string(),
         content: "Hello".to_string(),
         parent_tool_use_id: None,
@@ -87,13 +86,11 @@ async fn test_delta_serialization() {
 
 #[tokio::test]
 async fn test_permission_response_serialization() {
-    // Test: Verify permission response serializes correctly
+    // Test: Verify permission response serializes correctly (conductor-bundle format)
     let msg = ClientMessage::PermissionResponse {
-        id: "resp-1".to_string(),
-        session_id: "session-123".to_string(),
-        request_id: "req-1".to_string(),
+        id: "session-123".to_string(),
+        agent_type: "claude".to_string(),
         decision: Decision::Allow,
-        explanation: Some("User approved".to_string()),
     };
 
     let json = serde_json::to_string(&msg).unwrap();
@@ -113,17 +110,19 @@ async fn test_permission_response_serialization() {
 async fn test_session_config_serialization() {
     // Test: Verify session config serializes correctly
     let config = SessionConfig {
-        permission_mode: PermissionMode::Manual,
+        permission_mode: PermissionMode::Default,
         max_turns: Some(10),
+        max_thinking_tokens: None,
+        dangerously_skip_permissions: None,
         metadata: std::collections::HashMap::new(),
     };
 
     let json = serde_json::to_string(&config).unwrap();
-    assert!(json.contains("\"permission_mode\":\"manual\""));
+    assert!(json.contains("\"permission_mode\":\"default\""));
     assert!(json.contains("\"max_turns\":10"));
 
     let parsed: SessionConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(parsed.permission_mode, PermissionMode::Manual);
+    assert_eq!(parsed.permission_mode, PermissionMode::Default);
     assert_eq!(parsed.max_turns, Some(10));
 }
 

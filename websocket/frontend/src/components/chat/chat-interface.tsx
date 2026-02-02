@@ -13,6 +13,7 @@ import { Badge } from '../ui/badge';
 import { Separator } from '../ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Checkbox } from '../ui/checkbox';
+import type { PermissionMode } from '../../types';
 
 const WS_URL = 'ws://localhost:3000/ws';
 
@@ -30,6 +31,8 @@ export function ChatInterface() {
   const [model, setModel] = useState('opus');
   const [disallowedTools, setDisallowedTools] = useState('');
   const [enableThinking, setEnableThinking] = useState(true);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const [dangerouslySkipPermissions, setDangerouslySkipPermissions] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [resumeSessionId, setResumeSessionId] = useState(getResumeSessionId);
 
@@ -56,6 +59,8 @@ export function ChatInterface() {
     model,
     disallowedTools,
     enableThinking,
+    permissionMode,
+    dangerouslySkipPermissions: dangerouslySkipPermissions || undefined,
     resumeSessionId: resumeSessionId || undefined,
   });
 
@@ -137,6 +142,38 @@ export function ChatInterface() {
                       Enable Extended Thinking
                     </Label>
                   </div>
+
+                  <Separator />
+
+                  <div className="space-y-2">
+                    <Label htmlFor="permissionMode">Permission Mode</Label>
+                    <Select value={permissionMode} onValueChange={(v) => setPermissionMode(v as PermissionMode)}>
+                      <SelectTrigger id="permissionMode">
+                        <SelectValue placeholder="Select permission mode" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">Default (prompt for dangerous ops)</SelectItem>
+                        <SelectItem value="acceptEdits">Accept Edits (auto-approve file edits)</SelectItem>
+                        <SelectItem value="plan">Plan (planning only, no execution)</SelectItem>
+                        <SelectItem value="bypassPermissions">Bypass Permissions (auto-approve all)</SelectItem>
+                        <SelectItem value="delegate">Delegate (delegate to parent)</SelectItem>
+                        <SelectItem value="dontAsk">Don't Ask (deny all without prompting)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {permissionMode === 'bypassPermissions' && (
+                    <div className="flex items-center space-x-2 p-2 bg-destructive/10 rounded-md">
+                      <Checkbox
+                        id="dangerouslySkipPermissions"
+                        checked={dangerouslySkipPermissions}
+                        onCheckedChange={(checked) => setDangerouslySkipPermissions(checked === true)}
+                      />
+                      <Label htmlFor="dangerouslySkipPermissions" className="cursor-pointer text-destructive">
+                        ⚠️ I understand the risks - allow bypassing permissions
+                      </Label>
+                    </div>
+                  )}
 
                   <Separator />
 

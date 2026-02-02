@@ -7,7 +7,8 @@ pub mod session;
 
 pub use connection::{ConnectionId, ConnectionManager};
 pub use error::{Result, WebSocketError};
-pub use protocol::types::{ClientMessage, ServerMessage};
+pub use protocol::events::ClientMessage;
+pub use protocol::types::ServerMessage;
 pub use server::create_router;
 
 

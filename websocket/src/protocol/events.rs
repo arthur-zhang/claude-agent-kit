@@ -6,6 +6,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+// Import shared types from common module
+pub use super::common::{Decision, PermissionContext, PermissionMode, RiskLevel};
+
 // ============================================================================
 // Helper functions
 // ============================================================================
@@ -18,23 +21,23 @@ fn default_true() -> bool {
 // Sidecar Message Types (for WebSocket protocol)
 // ============================================================================
 
-/// Sidecar 消息 - 包装 SDK 原始消息
+/// Sidecar message - wraps SDK raw messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarMessage {
     pub id: String,
     #[serde(rename = "type")]
-    pub msg_type: String,  // 固定为 "message"
+    pub msg_type: String, // Fixed as "message"
     #[serde(rename = "agentType")]
-    pub agent_type: String,  // 固定为 "claude"
-    pub data: serde_json::Value,  // 原始 ProtocolMessage
+    pub agent_type: String, // Fixed as "claude"
+    pub data: serde_json::Value, // Raw ProtocolMessage
 }
 
-/// Sidecar 错误消息
+/// Sidecar error message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarError {
     pub id: String,
     #[serde(rename = "type")]
-    pub msg_type: String,  // 固定为 "error"
+    pub msg_type: String, // Fixed as "error"
     #[serde(rename = "agentType")]
     pub agent_type: String,
     pub error: String,
@@ -42,14 +45,14 @@ pub struct SidecarError {
     pub data: Option<serde_json::Value>,
 }
 
-/// 权限请求消息 - 发送给前端请求工具使用权限
+/// Permission request message - sent to frontend to request tool permission
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlRequestMessage {
     #[serde(rename = "type")]
-    pub msg_type: String,  // 固定为 "permission_request"
-    pub id: String,  // session_id
+    pub msg_type: String, // Fixed as "permission_request"
+    pub id: String,       // session_id
     #[serde(rename = "agentType")]
-    pub agent_type: String,  // 固定为 "claude"
+    pub agent_type: String, // Fixed as "claude"
     #[serde(rename = "toolName")]
     pub tool_name: String,
     #[serde(rename = "toolUseId", skip_serializing_if = "Option::is_none")]
@@ -82,9 +85,7 @@ pub enum AgentEvent {
     },
 
     /// Turn/task started
-    TurnStarted {
-        session_id: String,
-    },
+    TurnStarted { session_id: String },
 
     /// Turn/task completed
     TurnCompleted {
@@ -101,10 +102,7 @@ pub enum AgentEvent {
     },
 
     /// Turn failed with error
-    TurnFailed {
-        session_id: String,
-        error: String,
-    },
+    TurnFailed { session_id: String, error: String },
 
     /// Assistant text message (streaming)
     AssistantMessage {
@@ -114,10 +112,7 @@ pub enum AgentEvent {
     },
 
     /// Assistant reasoning/thinking (streaming)
-    AssistantReasoning {
-        session_id: String,
-        text: String,
-    },
+    AssistantReasoning { session_id: String, text: String },
 
     /// Tool use started
     ToolStarted {
@@ -228,10 +223,7 @@ pub enum AgentEvent {
     },
 
     /// Heartbeat - keep-alive message
-    Heartbeat {
-        session_id: String,
-        timestamp: u64,
-    },
+    Heartbeat { session_id: String, timestamp: u64 },
 
     /// Raw/unknown event (for forward compatibility)
     Raw {
@@ -257,7 +249,7 @@ pub enum ClientMessage {
 
     /// Permission response - responds to a control request (conductor-bundle protocol format)
     PermissionResponse {
-        id: String,  // session_id
+        id: String, // session_id
         #[serde(rename = "agentType")]
         agent_type: String,
         decision: Decision,
@@ -288,9 +280,7 @@ pub enum ClientMessage {
     },
 
     /// Session end - terminate the session
-    SessionEnd {
-        session_id: String,
-    },
+    SessionEnd { session_id: String },
 
     /// Control request - unified control message (interrupt, resume, cancel, etc.)
     ControlRequest {
@@ -329,12 +319,18 @@ pub enum ClientMessage {
         /// Resume a previous session by its session ID
         #[serde(skip_serializing_if = "Option::is_none")]
         resume: Option<String>,
+        /// Allow bypassing permission checks (required for bypassPermissions mode)
+        #[serde(
+            rename = "dangerouslySkipPermissions",
+            skip_serializing_if = "Option::is_none"
+        )]
+        dangerously_skip_permissions: Option<bool>,
     },
 
     /// Workspace init - conductor-bundle protocol format
     #[serde(rename = "workspace_init")]
     WorkspaceInit {
-        id: String,  // session_id
+        id: String, // session_id
         #[serde(rename = "agentType")]
         agent_type: String,
         options: WorkspaceInitOptions,
@@ -342,14 +338,14 @@ pub enum ClientMessage {
 
     /// Cancel - conductor-bundle protocol format for interrupting
     Cancel {
-        id: String,  // session_id
+        id: String, // session_id
         #[serde(rename = "agentType")]
         agent_type: String,
     },
 
     /// Query - conductor-bundle protocol format for user messages
     Query {
-        id: String,  // session_id
+        id: String, // session_id
         #[serde(rename = "agentType")]
         agent_type: String,
         prompt: String,
@@ -367,12 +363,30 @@ pub struct WorkspaceInitOptions {
     pub cwd: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "permissionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub permission_mode: Option<PermissionMode>,
-    #[serde(rename = "disallowedTools", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "disallowedTools",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub disallowed_tools: Option<Vec<String>>,
-    #[serde(rename = "maxThinkingTokens", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "maxThinkingTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_thinking_tokens: Option<i32>,
+    /// Allow bypassing permission checks (required for bypassPermissions mode)
+    #[serde(
+        rename = "dangerouslySkipPermissions",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dangerously_skip_permissions: Option<bool>,
+    /// Resume a previous session by its session ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<String>,
 }
 
 /// Options for query message (conductor-bundle protocol)
@@ -383,7 +397,10 @@ pub struct QueryOptions {
     pub model: Option<String>,
     #[serde(rename = "turnId", skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
-    #[serde(rename = "permissionMode", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "permissionMode",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub permission_mode: Option<PermissionMode>,
     #[serde(rename = "maxTurns", skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<i32>,
@@ -394,12 +411,15 @@ pub struct QueryOptions {
 /// Response for workspace_init (conductor-bundle protocol)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceInitResponse {
-    pub id: String,  // session_id
+    pub id: String, // session_id
     #[serde(rename = "type")]
-    pub msg_type: String,  // "workspace_init_output"
+    pub msg_type: String, // "workspace_init_output"
     #[serde(rename = "agentType")]
     pub agent_type: String,
-    #[serde(rename = "slashCommands", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "slashCommands",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub slash_commands: Option<Vec<SlashCommandInfo>>,
     #[serde(rename = "mcpServers", skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<Vec<String>>,
@@ -415,7 +435,10 @@ pub struct WorkspaceInitResponse {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(rename = "claudeCodeVersion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "claudeCodeVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub claude_code_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -461,43 +484,6 @@ pub enum FileOperation {
     Delete,
 }
 
-/// Permission context for control requests
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PermissionContext {
-    pub description: String,
-    #[serde(default)]
-    pub risk_level: RiskLevel,
-}
-
-/// Risk level for permissions
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum RiskLevel {
-    Low,
-    #[default]
-    Medium,
-    High,
-}
-
-/// Decision type for permission responses
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Decision {
-    Allow,
-    Deny,
-    AllowAlways,
-}
-
-/// Permission mode for session configuration
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionMode {
-    Auto,
-    #[default]
-    Manual,
-    Bypass,
-}
-
 /// Session status
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -516,7 +502,7 @@ pub enum ControlSubtype {
     Interrupt,
 }
 
-/// Session configuration
+/// Session configuration (for ClientMessage::SessionStart)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -581,11 +567,19 @@ pub struct SessionInitData {
     pub tools: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub mcp_servers: Vec<String>,
-    #[serde(rename = "permissionMode", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "permissionMode",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub permission_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slash_commands: Vec<String>,
-    #[serde(rename = "apiKeySource", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "apiKeySource",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub api_key_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_code_version: Option<String>,

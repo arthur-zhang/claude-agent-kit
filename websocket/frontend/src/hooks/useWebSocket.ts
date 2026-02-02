@@ -16,6 +16,7 @@ import type {
   TokenUsage,
   TurnStats,
   SessionInfo,
+  PermissionMode,
 } from '../types';
 
 interface UseWebSocketOptions {
@@ -24,6 +25,10 @@ interface UseWebSocketOptions {
   model?: string;
   disallowedTools?: string;
   enableThinking?: boolean;
+  /** Permission mode for the session */
+  permissionMode?: PermissionMode;
+  /** Allow bypassing permission checks (required for bypassPermissions mode) */
+  dangerouslySkipPermissions?: boolean;
   /** Resume a previous session by its session ID */
   resumeSessionId?: string;
   onMessage?: (message: SDKMessage) => void;
@@ -37,6 +42,9 @@ export function useWebSocket({
   model = 'opus',
   disallowedTools = '',
   enableThinking = true,
+  permissionMode,
+  dangerouslySkipPermissions,
+  resumeSessionId,
   onMessage,
   onError,
   onClose,
@@ -86,8 +94,11 @@ export function useWebSocket({
         options: {
           cwd,
           model,
+          permissionMode,
           disallowedTools: disallowedToolsArray.length > 0 ? disallowedToolsArray : undefined,
           maxThinkingTokens: enableThinking ? 10000 : undefined,
+          dangerouslySkipPermissions,
+          resume: resumeSessionId,
         },
       };
 
@@ -131,7 +142,7 @@ export function useWebSocket({
     };
 
     wsRef.current = ws;
-  }, [url, cwd, model, disallowedTools, enableThinking, onError, onClose]);
+  }, [url, cwd, model, disallowedTools, enableThinking, permissionMode, dangerouslySkipPermissions, resumeSessionId, onError, onClose]);
 
   // Handle WorkspaceInitResponse
   function handleWorkspaceInitResponse(response: WorkspaceInitResponse) {

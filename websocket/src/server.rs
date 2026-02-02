@@ -1,20 +1,25 @@
 use crate::connection::ConnectionManager;
-use crate::protocol::events::{AgentEvent, ClientMessage, ControlRequestMessage, ControlSubtype, Decision, PermissionContext, RiskLevel, SessionInitData, WorkspaceInitResponse, SlashCommandInfo};
+use crate::protocol::common::{Decision, PermissionContext, RiskLevel};
+use crate::protocol::events::{
+    AgentEvent, ClientMessage, ControlRequestMessage, ControlSubtype, SessionInitData,
+    SlashCommandInfo, WorkspaceInitResponse,
+};
 use crate::protocol::types::{PermissionMode, SessionConfig};
-use crate::session::query::{PermissionHandler, PermissionRequest, PermissionResponse, QueryError, QueryOptions, Session};
+use crate::session::query::{
+    PermissionHandler, PermissionRequest, PermissionResponse, QueryError, QueryOptions, Session,
+};
+use axum::extract::ws::Message as WsMessage;
 use axum::{
-    Router,
     extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
+    Router,
 };
-use axum::extract::ws::Message as WsMessage;
 use claude_agent_sdk::types::ProtocolMessage;
-use futures::{pin_mut, SinkExt, StreamExt};
+use futures::{pin_mut, SinkExt, StreamExt, stream::SplitStream};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -132,7 +137,7 @@ async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) 
 
     // Save workspace_init info for response format
     let is_workspace_init = init_data.is_workspace_init;
-    let workspace_init_request_id = init_data.request_id.clone();
+    let _workspace_init_request_id = init_data.request_id.clone();
 
     let is_resume = init_data.resume.is_some();
     let resume_session_id = init_data.resume.clone();
@@ -143,6 +148,7 @@ async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) 
         permission_mode: convert_permission_mode(init_data.permission_mode.as_ref()),
         max_turns: init_data.max_turns,
         max_thinking_tokens: init_data.max_thinking_tokens,
+        dangerously_skip_permissions: init_data.dangerously_skip_permissions,
         metadata: Default::default(),
     };
 
@@ -218,119 +224,103 @@ async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) 
         client_guard.process_handle()
     };
 
-    // Wait for System(init) message to get session init data
-    let init_data_result = wait_for_session_init(&session, is_resume).await;
-    match init_data_result {
-        Ok((actual_session_id, session_init_data)) => {
-            // Update session with actual session_id from SDK
-            if actual_session_id != session.session_id() {
-                session.set_session_id(actual_session_id.clone());
-            }
+    // For resume sessions, we don't wait for System(init) - just use the resume_id directly
+    // For new sessions, wait for System(init) message to get session init data
+    let (actual_session_id, session_init_data) = if is_resume {
+        // Resume case: use the resume_id as the session_id
+        let resume_id = resume_session_id.clone().unwrap_or_else(|| session_id.clone());
+        info!("Resume session: using resume_id {} as session_id", resume_id);
 
-            // Send response in appropriate format based on request type
-            if is_workspace_init {
-                // Send workspace_init_output format
-                let response = WorkspaceInitResponse {
-                    id: actual_session_id.clone(),
-                    msg_type: "workspace_init_output".to_string(),
-                    agent_type: "claude".to_string(),
-                    slash_commands: if session_init_data.slash_commands.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.slash_commands.iter().map(|s| SlashCommandInfo {
-                            name: s.clone(),
-                            description: None,
-                        }).collect())
-                    },
-                    mcp_servers: if session_init_data.mcp_servers.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.mcp_servers.clone())
-                    },
-                    tools: if session_init_data.tools.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.tools.clone())
-                    },
-                    agents: if session_init_data.agents.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.agents.clone())
-                    },
-                    skills: if session_init_data.skills.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.skills.clone())
-                    },
-                    plugins: if session_init_data.plugins.is_empty() {
-                        None
-                    } else {
-                        Some(session_init_data.plugins.iter().map(|p| p.name.clone()).collect())
-                    },
-                    model: session_init_data.model.clone(),
-                    cwd: session_init_data.cwd.clone(),
-                    claude_code_version: session_init_data.claude_code_version.clone(),
-                    error: None,
-                };
-                if let Ok(json) = serde_json::to_string(&response) {
-                    if let Err(e) = ws_sender.send(WsMessage::Text(json)).await {
-                        error!("Failed to send workspace_init_output for session {}: {}", session_id, e);
-                        return;
-                    }
+        // Update session with the resume_id
+        session.set_session_id(resume_id.clone());
+
+        // Return minimal init data for resume - the session already exists
+        (resume_id, SessionInitData::default())
+    } else {
+        // New session case: wait for System(init) message
+        match wait_for_session_init(&session).await {
+            Ok((actual_session_id, session_init_data)) => {
+                // Update session with actual session_id from SDK
+                if actual_session_id != session.session_id() {
+                    session.set_session_id(actual_session_id.clone());
                 }
-            } else {
-                // Send session_init format (legacy)
-                let init_response = AgentEvent::SessionInit {
-                    success: true,
-                    session_id: actual_session_id,
-                    error: None,
-                    data: session_init_data,
-                };
-                if let Ok(json) = serde_json::to_string(&init_response) {
-                    if let Err(e) = ws_sender.send(WsMessage::Text(json)).await {
-                        error!("Failed to send init response for session {}: {}", session_id, e);
-                        return;
-                    }
+                (actual_session_id, session_init_data)
+            }
+            Err(e) => {
+                error!("Session init failed for {}: {}", session_id, e);
+                send_init_error(&ws_sender, is_workspace_init, &session_id, &e).await;
+                if let Some(ref mut handle) = process_handle {
+                    let _ = handle.kill().await;
                 }
+                return;
             }
         }
-        Err(e) => {
-            error!("Session init failed for {}: {}", session_id, e);
-            if is_workspace_init {
-                // Send workspace_init_output with error
-                let response = WorkspaceInitResponse {
-                    id: session_id.clone(),
-                    msg_type: "workspace_init_output".to_string(),
-                    agent_type: "claude".to_string(),
-                    slash_commands: None,
-                    mcp_servers: None,
-                    tools: None,
-                    agents: None,
-                    skills: None,
-                    plugins: None,
-                    model: None,
-                    cwd: None,
-                    claude_code_version: None,
-                    error: Some(e.clone()),
-                };
-                if let Ok(json) = serde_json::to_string(&response) {
-                    let _ = ws_sender.send(WsMessage::Text(json)).await;
-                }
+    };
+
+    // Send response in appropriate format based on request type
+    if is_workspace_init {
+        // Send workspace_init_output format
+        let response = WorkspaceInitResponse {
+            id: actual_session_id.clone(),
+            msg_type: "workspace_init_output".to_string(),
+            agent_type: "claude".to_string(),
+            slash_commands: if session_init_data.slash_commands.is_empty() {
+                None
             } else {
-                let init_response = AgentEvent::SessionInit {
-                    success: false,
-                    session_id: String::new(),
-                    error: Some(e.clone()),
-                    data: SessionInitData::default(),
-                };
-                if let Ok(json) = serde_json::to_string(&init_response) {
-                    let _ = ws_sender.send(WsMessage::Text(json)).await;
-                }
+                Some(session_init_data.slash_commands.iter().map(|s| SlashCommandInfo {
+                    name: s.clone(),
+                    description: None,
+                }).collect())
+            },
+            mcp_servers: if session_init_data.mcp_servers.is_empty() {
+                None
+            } else {
+                Some(session_init_data.mcp_servers.clone())
+            },
+            tools: if session_init_data.tools.is_empty() {
+                None
+            } else {
+                Some(session_init_data.tools.clone())
+            },
+            agents: if session_init_data.agents.is_empty() {
+                None
+            } else {
+                Some(session_init_data.agents.clone())
+            },
+            skills: if session_init_data.skills.is_empty() {
+                None
+            } else {
+                Some(session_init_data.skills.clone())
+            },
+            plugins: if session_init_data.plugins.is_empty() {
+                None
+            } else {
+                Some(session_init_data.plugins.iter().map(|p| p.name.clone()).collect())
+            },
+            model: session_init_data.model.clone(),
+            cwd: session_init_data.cwd.clone(),
+            claude_code_version: session_init_data.claude_code_version.clone(),
+            error: None,
+        };
+        if let Ok(json) = serde_json::to_string(&response) {
+            if let Err(e) = ws_sender.send(WsMessage::Text(json)).await {
+                error!("Failed to send workspace_init_output for session {}: {}", session_id, e);
+                return;
             }
-            if let Some(ref mut handle) = process_handle {
-                let _ = handle.kill().await;
+        }
+    } else {
+        // Send session_init format (legacy)
+        let init_response = AgentEvent::SessionInit {
+            success: true,
+            session_id: actual_session_id,
+            error: None,
+            data: session_init_data,
+        };
+        if let Ok(json) = serde_json::to_string(&init_response) {
+            if let Err(e) = ws_sender.send(WsMessage::Text(json)).await {
+                error!("Failed to send init response for session {}: {}", session_id, e);
+                return;
             }
-            return;
         }
     }
 
@@ -346,246 +336,40 @@ async fn handle_socket(socket: WebSocket, _state: AppState, session_id: String) 
                         if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
                             match client_msg {
                                 ClientMessage::UserMessage { content, .. } => {
-                                    // Create cancel token
-                                    let cancel_token = CancellationToken::new();
-                                    current_cancel = Some(cancel_token.clone());
+                                    let result = process_query_stream(
+                                        &session,
+                                        content,
+                                        &config,
+                                        permission_handler.clone(),
+                                        &disallowed_tools,
+                                        &ws_sender,
+                                        &mut ws_receiver,
+                                        &mut perm_rx,
+                                        &pending_permission,
+                                        &mut current_cancel,
+                                    ).await;
 
-                                    // Execute query
-                                    let options = QueryOptions {
-                                        permission_mode: config.permission_mode.clone(),
-                                        permission_handler: Some(permission_handler.clone()),
-                                        max_turns: config.max_turns,
-                                        env: None,
-                                        disallowed_tools: disallowed_tools.clone(),
-                                    };
-                                    let stream = session.query(content, options, cancel_token);
-                                    pin_mut!(stream);
-
-                                    // Inner loop: process query stream while also handling permission requests and WebSocket messages
-                                    let mut ws_closed = false;
-                                    loop {
-                                        tokio::select! {
-                                            result = stream.next() => {
-                                                match result {
-                                                    Some(Ok(msg)) => {
-                                                        // 直接发送原始 ProtocolMessage
-                                                        send_message(&ws_sender, session.session_id(), &msg).await;
-
-                                                        // 检查是否是 Result 消息（表示轮次结束）
-                                                        if matches!(msg, ProtocolMessage::Result(_)) {
-                                                            break;
-                                                        }
-                                                    }
-                                                    Some(Err(QueryError::Interrupted)) => {
-                                                        send_error(&ws_sender, session.session_id(), "Interrupted by user").await;
-                                                        break;
-                                                    }
-                                                    Some(Err(e)) => {
-                                                        send_error(&ws_sender, session.session_id(), &e.to_string()).await;
-                                                        break;
-                                                    }
-                                                    None => {
-                                                        // Stream ended
-                                                        break;
-                                                    }
-                                                }
-                                            }
-
-                                            // 处理权限请求
-                                            Some((req, resp_tx)) = perm_rx.recv() => {
-                                                // 存储响应 channel
-                                                {
-                                                    let mut pending = pending_permission.lock().await;
-                                                    *pending = Some(resp_tx);
-                                                }
-
-                                                // 发送权限请求事件到前端
-                                                let msg = ControlRequestMessage {
-                                                    msg_type: "permission_request".to_string(),
-                                                    id: session.session_id().to_string(),
-                                                    agent_type: "claude".to_string(),
-                                                    tool_name: req.tool_name,
-                                                    tool_use_id: req.tool_use_id,
-                                                    input: req.input,
-                                                    context: PermissionContext {
-                                                        description: "Tool permission request".to_string(),
-                                                        risk_level: RiskLevel::Medium,
-                                                    },
-                                                };
-                                                send_control_request(&ws_sender, msg).await;
-                                            }
-
-                                            // 处理 WebSocket 消息（权限响应和中断）- 修复竞态条件
-                                            ws_msg = ws_receiver.next() => {
-                                                match ws_msg {
-                                                    Some(Ok(WsMessage::Text(text))) => {
-                                                        if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
-                                                            match client_msg {
-                                                                ClientMessage::PermissionResponse { id: _, decision, .. } => {
-                                                                    let mut pending = pending_permission.lock().await;
-                                                                    if let Some(sender) = pending.take() {
-                                                                        let response = match decision {
-                                                                            Decision::Allow => PermissionResponse::Allow,
-                                                                            Decision::Deny => PermissionResponse::Deny,
-                                                                            Decision::AllowAlways => PermissionResponse::AllowAlways,
-                                                                        };
-                                                                        let _ = sender.send(response);
-                                                                    }
-                                                                }
-                                                                ClientMessage::ControlRequest { subtype: ControlSubtype::Interrupt, .. } => {
-                                                                    if let Some(token) = current_cancel.take() {
-                                                                        token.cancel();
-                                                                    }
-                                                                }
-                                                                ClientMessage::Cancel { .. } => {
-                                                                    if let Some(token) = current_cancel.take() {
-                                                                        token.cancel();
-                                                                    }
-                                                                }
-                                                                _ => {} // 其他消息在 query 期间忽略
-                                                            }
-                                                        }
-                                                    }
-                                                    Some(Ok(WsMessage::Close(_))) | None => {
-                                                        // WebSocket 关闭，退出内层循环并标记
-                                                        ws_closed = true;
-                                                        break;
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // 如果 WebSocket 已关闭，退出外层循环
-                                    if ws_closed {
+                                    if matches!(result, QueryStreamResult::WebSocketClosed) {
                                         break;
                                     }
-
-                                    current_cancel = None;
-
-                                    // Result 消息已经包含了轮次完成信息，不需要额外发送 TurnCompleted
                                 }
                                 ClientMessage::Query { prompt, .. } => {
-                                    // Create cancel token
-                                    let cancel_token = CancellationToken::new();
-                                    current_cancel = Some(cancel_token.clone());
+                                    let result = process_query_stream(
+                                        &session,
+                                        prompt,
+                                        &config,
+                                        permission_handler.clone(),
+                                        &disallowed_tools,
+                                        &ws_sender,
+                                        &mut ws_receiver,
+                                        &mut perm_rx,
+                                        &pending_permission,
+                                        &mut current_cancel,
+                                    ).await;
 
-                                    // Execute query
-                                    let options = QueryOptions {
-                                        permission_mode: config.permission_mode.clone(),
-                                        permission_handler: Some(permission_handler.clone()),
-                                        max_turns: config.max_turns,
-                                        env: None,
-                                        disallowed_tools: disallowed_tools.clone(),
-                                    };
-                                    let stream = session.query(prompt, options, cancel_token);
-                                    pin_mut!(stream);
-
-                                    // Inner loop: process query stream while also handling permission requests and WebSocket messages
-                                    let mut ws_closed = false;
-                                    loop {
-                                        tokio::select! {
-                                            result = stream.next() => {
-                                                match result {
-                                                    Some(Ok(msg)) => {
-                                                        // 直接发送原始 ProtocolMessage
-                                                        send_message(&ws_sender, session.session_id(), &msg).await;
-
-                                                        // 检查是否是 Result 消息（表示轮次结束）
-                                                        if matches!(msg, ProtocolMessage::Result(_)) {
-                                                            break;
-                                                        }
-                                                    }
-                                                    Some(Err(QueryError::Interrupted)) => {
-                                                        send_error(&ws_sender, session.session_id(), "Interrupted by user").await;
-                                                        break;
-                                                    }
-                                                    Some(Err(e)) => {
-                                                        send_error(&ws_sender, session.session_id(), &e.to_string()).await;
-                                                        break;
-                                                    }
-                                                    None => {
-                                                        // Stream ended
-                                                        break;
-                                                    }
-                                                }
-                                            }
-
-                                            // 处理权限请求
-                                            Some((req, resp_tx)) = perm_rx.recv() => {
-                                                // 存储响应 channel
-                                                {
-                                                    let mut pending = pending_permission.lock().await;
-                                                    *pending = Some(resp_tx);
-                                                }
-
-                                                // 发送权限请求事件到前端
-                                                let msg = ControlRequestMessage {
-                                                    msg_type: "permission_request".to_string(),
-                                                    id: session.session_id().to_string(),
-                                                    agent_type: "claude".to_string(),
-                                                    tool_name: req.tool_name,
-                                                    tool_use_id: req.tool_use_id,
-                                                    input: req.input,
-                                                    context: PermissionContext {
-                                                        description: "Tool permission request".to_string(),
-                                                        risk_level: RiskLevel::Medium,
-                                                    },
-                                                };
-                                                send_control_request(&ws_sender, msg).await;
-                                            }
-
-                                            // 处理 WebSocket 消息（权限响应和中断）- 修复竞态条件
-                                            ws_msg = ws_receiver.next() => {
-                                                match ws_msg {
-                                                    Some(Ok(WsMessage::Text(text))) => {
-                                                        if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
-                                                            match client_msg {
-                                                                ClientMessage::PermissionResponse { id: _, decision, .. } => {
-                                                                    let mut pending = pending_permission.lock().await;
-                                                                    if let Some(sender) = pending.take() {
-                                                                        let response = match decision {
-                                                                            Decision::Allow => PermissionResponse::Allow,
-                                                                            Decision::Deny => PermissionResponse::Deny,
-                                                                            Decision::AllowAlways => PermissionResponse::AllowAlways,
-                                                                        };
-                                                                        let _ = sender.send(response);
-                                                                    }
-                                                                }
-                                                                ClientMessage::ControlRequest { subtype: ControlSubtype::Interrupt, .. } => {
-                                                                    if let Some(token) = current_cancel.take() {
-                                                                        token.cancel();
-                                                                    }
-                                                                }
-                                                                ClientMessage::Cancel { .. } => {
-                                                                    if let Some(token) = current_cancel.take() {
-                                                                        token.cancel();
-                                                                    }
-                                                                }
-                                                                _ => {} // 其他消息在 query 期间忽略
-                                                            }
-                                                        }
-                                                    }
-                                                    Some(Ok(WsMessage::Close(_))) | None => {
-                                                        // WebSocket 关闭，退出内层循环并标记
-                                                        ws_closed = true;
-                                                        break;
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // 如果 WebSocket 已关闭，退出外层循环
-                                    if ws_closed {
+                                    if matches!(result, QueryStreamResult::WebSocketClosed) {
                                         break;
                                     }
-
-                                    current_cancel = None;
-
-                                    // Result 消息已经包含了轮次完成信息，不需要额外发送 TurnCompleted
                                 }
                                 ClientMessage::PermissionResponse { id: _, decision, .. } => {
                                     // 处理权限响应
@@ -675,6 +459,8 @@ struct UserSessionInitData {
     max_thinking_tokens: Option<i32>,
     /// Resume a previous session by its session ID
     resume: Option<String>,
+    /// Allow bypassing permission checks (required for bypassPermissions mode)
+    dangerously_skip_permissions: Option<bool>,
 }
 
 /// Session initialization errors
@@ -748,6 +534,7 @@ async fn wait_for_init_message(
                         disallowed_tools,
                         max_thinking_tokens,
                         resume,
+                        dangerously_skip_permissions,
                     } => {
                         // Validate cwd
                         let cwd_path = PathBuf::from(&cwd);
@@ -767,6 +554,7 @@ async fn wait_for_init_message(
                             disallowed_tools,
                             max_thinking_tokens,
                             resume,
+                            dangerously_skip_permissions,
                         });
                     }
                     ClientMessage::WorkspaceInit { id: _, agent_type: _, options } => {
@@ -787,7 +575,8 @@ async fn wait_for_init_message(
                             user: None,
                             disallowed_tools: options.disallowed_tools,
                             max_thinking_tokens: options.max_thinking_tokens,
-                            resume: None,
+                            resume: options.resume,
+                            dangerously_skip_permissions: options.dangerously_skip_permissions,
                         });
                     }
                     other => {
@@ -808,15 +597,10 @@ async fn wait_for_init_message(
 }
 
 /// Convert protocol PermissionMode to types PermissionMode
+/// Since both events.rs and types.rs use the same PermissionMode from common.rs,
+/// this is now just a pass-through with a default value.
 fn convert_permission_mode(mode: Option<&crate::protocol::events::PermissionMode>) -> PermissionMode {
-    use crate::protocol::events::PermissionMode as EventsMode;
-
-    match mode {
-        Some(EventsMode::Auto) => PermissionMode::Auto,
-        Some(EventsMode::Manual) => PermissionMode::Manual,
-        Some(EventsMode::Bypass) => PermissionMode::Bypass,
-        None => PermissionMode::Manual, // Default
-    }
+    mode.cloned().unwrap_or(PermissionMode::Default)
 }
 
 /// Send initialization error in appropriate format
@@ -878,15 +662,6 @@ async fn send_error_and_close(
     }
 }
 
-/// Send an AgentEvent to the WebSocket
-async fn send_event(ws_sender: &Sender<WsMessage>, event: AgentEvent) {
-    if let Ok(json) = serde_json::to_string(&event) {
-        if let Err(e) = ws_sender.send(WsMessage::Text(json)).await {
-            error!("Failed to send event: {}", e);
-        }
-    }
-}
-
 /// 发送 ControlRequestMessage 到 WebSocket
 async fn send_control_request(ws_sender: &Sender<WsMessage>, msg: ControlRequestMessage) {
     if let Ok(json) = serde_json::to_string(&msg) {
@@ -929,30 +704,165 @@ async fn send_error(ws_sender: &Sender<WsMessage>, session_id: &str, error: &str
     }
 }
 
+/// Query stream processing result
+enum QueryStreamResult {
+    /// Query completed normally
+    Completed,
+    /// WebSocket was closed during query
+    WebSocketClosed,
+}
+
+/// Process a query stream, handling messages, permissions, and cancellation.
+/// This is the unified handler for both UserMessage and Query message types.
+async fn process_query_stream(
+    session: &Session,
+    message: String,
+    config: &SessionConfig,
+    permission_handler: PermissionHandler,
+    disallowed_tools: &Option<Vec<String>>,
+    ws_sender: &Sender<WsMessage>,
+    ws_receiver: &mut SplitStream<WebSocket>,
+    perm_rx: &mut tokio::sync::mpsc::Receiver<(PermissionRequest, oneshot::Sender<PermissionResponse>)>,
+    pending_permission: &Arc<Mutex<Option<oneshot::Sender<PermissionResponse>>>>,
+    current_cancel: &mut Option<CancellationToken>,
+) -> QueryStreamResult {
+    // Create cancel token
+    let cancel_token = CancellationToken::new();
+    *current_cancel = Some(cancel_token.clone());
+
+    // Execute query
+    let options = QueryOptions {
+        permission_mode: config.permission_mode.clone(),
+        permission_handler: Some(permission_handler),
+        max_turns: config.max_turns,
+        env: None,
+        disallowed_tools: disallowed_tools.clone(),
+    };
+    let stream = session.query(message, options, cancel_token);
+    pin_mut!(stream);
+
+    // Inner loop: process query stream while also handling permission requests and WebSocket messages
+    loop {
+        tokio::select! {
+            result = stream.next() => {
+                match result {
+                    Some(Ok(msg)) => {
+                        // Send raw ProtocolMessage
+                        send_message(ws_sender, session.session_id(), &msg).await;
+
+                        // Check if this is a Result message (indicates turn end)
+                        if matches!(msg, ProtocolMessage::Result(_)) {
+                            *current_cancel = None;
+                            return QueryStreamResult::Completed;
+                        }
+                    }
+                    Some(Err(QueryError::Interrupted)) => {
+                        send_error(ws_sender, session.session_id(), "Interrupted by user").await;
+                        *current_cancel = None;
+                        return QueryStreamResult::Completed;
+                    }
+                    Some(Err(e)) => {
+                        send_error(ws_sender, session.session_id(), &e.to_string()).await;
+                        *current_cancel = None;
+                        return QueryStreamResult::Completed;
+                    }
+                    None => {
+                        // Stream ended
+                        *current_cancel = None;
+                        return QueryStreamResult::Completed;
+                    }
+                }
+            }
+
+            // Handle permission requests
+            Some((req, resp_tx)) = perm_rx.recv() => {
+                // Store response channel
+                {
+                    let mut pending = pending_permission.lock().await;
+                    *pending = Some(resp_tx);
+                }
+
+                // Send permission request event to frontend
+                let msg = ControlRequestMessage {
+                    msg_type: "permission_request".to_string(),
+                    id: session.session_id().to_string(),
+                    agent_type: "claude".to_string(),
+                    tool_name: req.tool_name,
+                    tool_use_id: req.tool_use_id,
+                    input: req.input,
+                    context: PermissionContext {
+                        description: "Tool permission request".to_string(),
+                        risk_level: RiskLevel::Medium,
+                    },
+                };
+                send_control_request(ws_sender, msg).await;
+            }
+
+            // Handle WebSocket messages (permission responses and interrupts)
+            ws_msg = ws_receiver.next() => {
+                match ws_msg {
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Ok(client_msg) = serde_json::from_str::<ClientMessage>(&text) {
+                            match client_msg {
+                                ClientMessage::PermissionResponse { id: _, decision, .. } => {
+                                    let mut pending = pending_permission.lock().await;
+                                    if let Some(sender) = pending.take() {
+                                        let response = match decision {
+                                            Decision::Allow => PermissionResponse::Allow,
+                                            Decision::Deny => PermissionResponse::Deny,
+                                            Decision::AllowAlways => PermissionResponse::AllowAlways,
+                                        };
+                                        let _ = sender.send(response);
+                                    }
+                                }
+                                ClientMessage::ControlRequest { subtype: ControlSubtype::Interrupt, .. } => {
+                                    if let Some(token) = current_cancel.take() {
+                                        token.cancel();
+                                    }
+                                }
+                                ClientMessage::Cancel { .. } => {
+                                    if let Some(token) = current_cancel.take() {
+                                        token.cancel();
+                                    }
+                                }
+                                _ => {} // Ignore other messages during query
+                            }
+                        }
+                    }
+                    Some(Ok(WsMessage::Close(_))) | None => {
+                        // WebSocket closed, exit inner loop and mark
+                        *current_cancel = None;
+                        return QueryStreamResult::WebSocketClosed;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// Wait for session initialization (System init message) from the Session
+/// This is only called for new sessions, not for resume sessions.
 async fn wait_for_session_init(
     session: &Session,
-    is_resume: bool,
 ) -> Result<(String, SessionInitData), String> {
     use crate::protocol::events::PluginInfo;
 
     let client_guard = session.client().lock().await;
 
-    // For new sessions, send empty query and interrupt to get session init data
-    if !is_resume {
-        info!("Sending empty query to get session init data for session {}", session.session_id());
+    // Send empty query and interrupt to get session init data
+    info!("Sending empty query to get session init data for session {}", session.session_id());
 
-        // Send empty query to trigger session initialization
-        if let Err(e) = client_guard.send_input_message(
-            claude_agent_sdk::types::InputMessage::user("".to_string(), session.session_id().to_string())
-        ).await {
-            return Err(format!("Failed to send empty query: {}", e));
-        }
-
-        // Immediately interrupt to stop processing
-        let _ = client_guard.interrupt().await;
-        info!("Sent interrupt after empty query for session {}", session.session_id());
+    // Send empty query to trigger session initialization
+    if let Err(e) = client_guard.send_input_message(
+        claude_agent_sdk::types::InputMessage::user("".to_string(), session.session_id().to_string())
+    ).await {
+        return Err(format!("Failed to send empty query: {}", e));
     }
+
+    // Immediately interrupt to stop processing
+    let _ = client_guard.interrupt().await;
+    info!("Sent interrupt after empty query for session {}", session.session_id());
 
     // Subscribe to protocol messages
     let mut stream = match client_guard.receive_protocol_messages().await {
@@ -977,6 +887,7 @@ async fn wait_for_session_init(
 
         match msg_result {
             Ok(Some(Ok(msg))) => {
+                info!("Received message from stdout: {:#?}", msg);
                 match &msg {
                     ProtocolMessage::System(system) if system.subtype == "init" => {
                         let extra = &system.extra;

@@ -167,11 +167,23 @@ impl Session {
         use claude_agent_sdk::PermissionMode as SdkMode;
 
         let sdk_mode = match config.permission_mode {
-            PermissionMode::Auto => SdkMode::Default,
-            PermissionMode::Manual => SdkMode::Default,
-            PermissionMode::Bypass => SdkMode::BypassPermissions,
+            PermissionMode::Default => SdkMode::Default,
+            PermissionMode::AcceptEdits => SdkMode::AcceptEdits,
+            PermissionMode::BypassPermissions => SdkMode::BypassPermissions,
+            PermissionMode::Plan => SdkMode::Plan,
+            PermissionMode::Delegate => SdkMode::Delegate,
+            PermissionMode::DontAsk => SdkMode::DontAsk,
         };
         agent_options.permission_mode = Some(sdk_mode);
+
+        // 设置 dangerously_skip_permissions (通过 extra_args)
+        if config.dangerously_skip_permissions == Some(true) {
+            agent_options.extra_args.insert(
+                "dangerously-skip-permissions".to_string(),
+                None,
+            );
+            info!("⚠️ Setting dangerously_skip_permissions flag");
+        }
 
         if let Some(max_turns) = config.max_turns {
             agent_options.max_turns = Some(max_turns);

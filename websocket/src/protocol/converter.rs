@@ -2,7 +2,9 @@
 //!
 //! Converts between agent-sdk message types and WebSocket protocol message types.
 
-use crate::protocol::types::*;
+use super::common::Decision;
+use super::events::ClientMessage;
+use super::types::*;
 use claude_agent_sdk::{ContentBlock, ContentBlockContent, Message, MessageContent};
 use uuid::Uuid;
 

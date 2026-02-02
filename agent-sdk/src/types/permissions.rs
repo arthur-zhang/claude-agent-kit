@@ -15,6 +15,10 @@ pub enum PermissionMode {
     Plan,
     /// Bypass permissions mode.
     BypassPermissions,
+    /// Delegate mode - delegate permission decisions to parent process.
+    Delegate,
+    /// Don't ask mode - deny all permission requests without prompting.
+    DontAsk,
 }
 
 /// Permission behavior options.
